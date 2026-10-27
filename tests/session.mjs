@@ -18,9 +18,8 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   try {
     const loaded = await loadExtensions([join(project, "index.ts")], cwd);
     assert.deepEqual(loaded.errors, []); checks++;
-    loaded.runtime.flagValues.set("next-prompt-model", "openai/gpt-6-luna");
     const requests = [], errors = [], notices = [];
-    let editor, factory, submitted, prediction = "show me an example", mainCalls = 0;
+    let editor, factory, submitted, prediction = "show me an example", mainCalls = 0, pickerSearch = "luna", pickerCalls = 0;
     const ui = {
       getEditorText: () => editor?.getExpandedText() ?? "", getEditorComponent: () => factory,
       setEditorComponent: value => {
@@ -30,9 +29,10 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       },
       notify: text => notices.push(text),
       custom: factory => new Promise(resolve => {
+        pickerCalls++;
         const picker = factory(screen, { fg: (_color, text) => text }, new KeybindingsManager(), resolve);
         picker.focused = true; picker.render(60);
-        for (const character of "gemini") picker.handleInput(character);
+        for (const character of pickerSearch) picker.handleInput(character);
         picker.handleInput("\r");
       }),
     };
@@ -79,7 +79,17 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       resourceLoader: resources, initialActiveToolNames: [], baseToolsOverride: {},
     });
     await session.bindExtensions({ mode: "tui", uiContext: ui, onError: error => errors.push(error) });
+    assert.equal(editor, undefined, "loading without a model leaves suggestions disabled"); checks++;
+    await session.prompt("/next-prompt status");
+    assert.equal(pickerCalls, 0, "status does not start first-use setup"); checks++;
+    const beforeSetupEntries = session.sessionManager.getBranch().length;
+    await session.prompt("/next-prompt");
     assert.ok(editor); checks++;
+    assert.equal(pickerCalls, 1); checks++;
+    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "next-prompt.json"), "utf8")), { model: "openai/gpt-6-luna" }); checks++;
+    assert.equal(requests.length, 0, "first-use setup makes no prediction request"); checks++;
+    assert.equal(mainCalls, 0); checks++;
+    assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries, "first-use setup adds no conversation entry"); checks++;
     // Run the shipped terminal submit callback, rather than inventing the input/start/settle order.
     const terminal = { defaultEditor: editor, editor, session,
       flushPendingBashComponents() {}, onInputCallback: text => { submitted = session.prompt(text); } };
@@ -138,6 +148,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.ok(notices.at(-1).includes("Reported tokens: 450 in / 60 out (3/3 reports)"), "abstention/rejection still contribute reported usage"); checks++;
     assert.deepEqual(errors, []); checks++;
     const beforePickerEntries = session.sessionManager.getBranch().length;
+    pickerSearch = "gemini";
     editor.setText("/next-prompt model"); editor.handleInput("\r"); await submitted;
     assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "next-prompt.json"), "utf8")), { model: "google/gemini-fixture" }); checks++;
     assert.equal(requests.length, 3); checks++;
@@ -152,6 +163,12 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(requests.at(-1).model, google); checks++;
     await session.prompt("/next-prompt status");
     assert.ok(notices.at(-1).includes("Reported tokens: 600 in / 80 out (4/4 reports)"), "changing models retains the session's prediction usage"); checks++;
+    await session.prompt("/next-prompt off");
+    editor.setText("/next-prompt"); editor.handleInput("\r"); await submitted;
+    assert.ok(notices.at(-1).startsWith("Next-prompt: on; model: google/gemini-fixture;")); checks++;
+    assert.equal(pickerCalls, 2, "bare command reuses the existing selection without another picker"); checks++;
+    assert.equal(requests.length, 4); checks++;
+    assert.equal(mainCalls, 4); checks++;
     assert.deepEqual(errors, []); checks++;
     return checks;
   } finally {

@@ -84,15 +84,16 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
 
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
   pi.registerCommand("next-prompt", {
-    description: "Next-prompt: model, on, off, status, recall",
+    description: "Start suggestions; model, on, off, status, recall",
     handler: async (args, ctx) => {
-      const command = args.trim() || "status", commandEpoch = ++modelEpoch;
+      const command = args.trim() || "on", commandEpoch = ++modelEpoch;
+      const modelCommand = command === "model" || command.startsWith("model ");
       // Commands cancel pending generation/visible ghosts; recall may reuse an offered candidate.
       invalidate("cancelled:command", true);
-      if (command === "model" || command.startsWith("model ")) {
+      if (modelCommand || (command === "on" && !selection)) {
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
         if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Wait for Pi to finish before changing the suggestion model.", "info"); return; }
-        const requested = command.slice(5).trim() || await pickModel(ctx, selection);
+        const requested = (modelCommand ? command.slice(5).trim() : "") || await pickModel(ctx, selection);
         if (commandEpoch !== modelEpoch || !requested) return;
         if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Pi is busy. Try choosing the model again when it finishes.", "info"); return; }
         const choice = selectModel(ctx, requested);

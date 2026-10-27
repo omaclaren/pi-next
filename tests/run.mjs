@@ -46,7 +46,8 @@ function harness({ flag = "openai/gpt-6-luna", mode = "tui", timeoutMs = 40, con
     on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); } };
   const ui = { getEditorText: () => editor?.getText() ?? "", getEditorComponent: () => factory,
     setEditorComponent: value => { factory = value; editor = value ? value(screen, theme, new KeybindingsManager()) : undefined;
-      if (editor) { editor.setText(""); editor.focused = true; } }, notify: (text, level) => notices.push({ text, level }) };
+      if (editor) { editor.setText(""); editor.focused = true; } }, notify: (text, level) => notices.push({ text, level }),
+    custom: async () => undefined };
   const known = () => (catalog ?? (selected ? [selected] : [])).filter(m => m.type === "chat");
   const registry = { getModelOfType: (type, provider, id) => type === "chat" ? known().find(m => m.provider === provider && m.id === id) : undefined,
     getAvailable: () => available ? known() : [], getProviderAuthStatus: () => { authReads++; return { configured: true, source: authSource }; }, isUsingOAuth: () => { authReads++; return oauth; },

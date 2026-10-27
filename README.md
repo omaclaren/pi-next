@@ -8,13 +8,13 @@ A small [Pi](https://pi.dev/) extension that suggests your next prompt as dim te
 pi install git:github.com/omaclaren/pi-next-prompt
 ```
 
-Start a new Pi process, then choose a suggestion model:
+Start a new Pi process, then run:
 
 ```text
-/next-prompt model
+/next-prompt
 ```
 
-The searchable picker lists Pi's available chat models and saves your choice in `next-prompt.json` in Pi's agent directory (normally `~/.pi/agent/`). Pi handles authentication and requests. The suggestion model is separate from your main model and thinking settings; a small, fast model usually makes sense here. Installing alone doesn't enable suggestions.
+If no model is selected, this opens a searchable picker of Pi's available chat models. It saves your choice in `next-prompt.json` in Pi's agent directory (normally `~/.pi/agent/`), ready for later sessions. Pi handles authentication and requests. The suggestion model is separate from your main model and thinking settings; a small, fast model usually makes sense here. Installing alone doesn't enable suggestions.
 
 You can override the saved choice at startup:
 
@@ -32,13 +32,14 @@ After Pi finishes a reply, a suggestion may appear if the editor is empty.
 - Typing clears the suggestion. Deleting back to empty doesn't bring it back automatically.
 
 ```text
+/next-prompt model
 /next-prompt recall
 /next-prompt status
 /next-prompt off
 /next-prompt on
 ```
 
-`recall` brings back the last suggestion for the same exchange without another model call. `status` shows attempts and reported token usage for the current session. Model choice is saved; `on` and `off` apply to the current session.
+`model` changes the suggestion model. `recall` brings back the last suggestion for the same exchange without another model call. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
 
 Each prediction makes an extra model request using a few recent messages and the latest reply. It doesn't generate periodically while idle. The extension uses Pi's custom-editor slot, so it can conflict with other custom-editor extensions.
 

@@ -40,6 +40,38 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     for (const ref of ["openrouter/org/model:free", "llama-cpp/model.gguf", "custom/Model with spaces"]) ok(core.isModelRef(ref));
     for (const ref of ["", "model-only", "/model", "provider/", "provider/model\n", "provider/\x1b[31mmodel", "provider/\u202Emodel"]) eq(core.isModelRef(ref), false);
 
+    // Bare command and explicit on share first-use setup, then reuse the chosen model.
+    for (const command of ["", "on"]) {
+      const saved = memory(), h = harness({ flag: null, settings: saved }); h.models(catalog);
+      let pickers = 0;
+      h.ctx.ui.custom = async factory => {
+        pickers++; await h.emit("ui_prompt_start", { kind: "custom" });
+        try {
+          return await new Promise(resolve => {
+            const picker = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text }, new KeybindingsManager(), resolve);
+            picker.focused = true; picker.render(80);
+            for (const character of "gemini") picker.handleInput(character);
+            picker.handleInput("\r");
+          });
+        } finally { await h.emit("ui_prompt_end", { kind: "custom" }); }
+      };
+      await h.start(); await h.command("status"); eq(pickers, 0); eq(saved.writes, []);
+      await h.command(command); eq(pickers, 1); eq(saved.writes, ["google/gemini-fixture"]); ok(h.editor);
+      eq(h.requests.length, 0, "first-use setup makes no prediction request");
+      await h.command("off"); await h.command(command); await h.command(command);
+      eq(pickers, 1, "an existing selection is reused without a picker"); eq(saved.writes.length, 1);
+      await h.command("status"); ok(h.notices.at(-1).text.startsWith("Next-prompt: on; model: google/gemini-fixture;"));
+      eq(h.ctx.model.id, "gpt-6.1-sol"); eq(h.ctx.thinkingLevel, "xhigh");
+      await h.begin(); await h.finish(); eq(h.requests.length, 1); eq(h.requests[0].model.provider, "google"); await h.shutdown();
+      for (const emptyCatalog of [false, true]) {
+        const store = memory(), cancelled = harness({ flag: null, settings: store });
+        cancelled.models(emptyCatalog ? [] : catalog); await cancelled.start();
+        cancelled.ctx.ui.custom = async () => undefined;
+        await cancelled.command(command); eq(store.writes, []); eq(cancelled.editor, undefined);
+        await cancelled.begin(); await cancelled.finish(); eq(cancelled.requests.length, 0); await cancelled.shutdown();
+      }
+    }
+
     // Every chat provider uses the same Pi registry/request path, with no credential inspection.
     for (const chosen of catalog) {
       const h = harness({ flag: `${chosen.provider}/${chosen.id}` }); h.selected(chosen);
@@ -60,6 +92,8 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     const override = harness({ settings: saved }); override.models(catalog); await override.start();
     await override.begin(); await override.finish(); eq(override.requests[0].model.provider, "openai"); eq(saved.writes.length, 1); await override.shutdown();
     const invalid = harness({ flag: "unknown/missing", settings: saved }); invalid.models(catalog); await invalid.start();
+    invalid.ctx.ui.custom = () => { throw new Error("An invalid override must not silently open a fallback picker"); };
+    for (const command of ["", "on"]) { await invalid.command(command); eq(saved.writes.length, 1); }
     await invalid.begin(); await invalid.finish(); eq(invalid.requests.length, 0, "invalid override never falls back to the saved or main model"); await invalid.shutdown();
 
     // Pi's real Input/SelectList provide a bounded searchable picker.
@@ -88,19 +122,19 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     eq(await mouse, "google/gemini-fixture");
 
     // Cancellation, failures, busy/headless contexts and editor ownership never save a choice.
-    for (const mode of ["rpc", "print", "json"]) {
+    for (const mode of ["rpc", "print", "json"]) for (const command of ["", "on", "model google/gemini-fixture"]) {
       const s = { load() { throw new Error("must not read"); }, save() { throw new Error("must not write"); } };
-      const headless = harness({ flag: null, mode, settings: s }); await headless.start(); await headless.command("model google/gemini-fixture"); eq(headless.requests.length, 0); await headless.shutdown();
+      const headless = harness({ flag: null, mode, settings: s }); await headless.start(); await headless.command(command); eq(headless.requests.length, 0); await headless.shutdown();
     }
-    for (const block of [x => x.setIdle(false), x => x.queue(true), x => x.emit("ui_prompt_start")]) {
+    for (const command of ["", "on", "model"]) for (const block of [x => x.setIdle(false), x => x.queue(true), x => x.emit("ui_prompt_start")]) {
       const s = memory(), busy = harness({ flag: null, settings: s }); busy.models(catalog); await busy.start(); await block(busy);
-      await busy.command("model google/gemini-fixture"); eq(s.writes, []); eq(busy.requests.length, 0); await busy.shutdown();
+      await busy.command(command); eq(s.writes, []); eq(busy.requests.length, 0); await busy.shutdown();
     }
-    for (const stop of [x => x.command("off"), x => x.shutdown(), x => x.emit("session_before_tree")]) {
+    for (const command of ["", "on", "model"]) for (const stop of [x => x.command("off"), x => x.shutdown(), x => x.emit("session_before_tree")]) {
       const s = memory(), pending = harness({ flag: null, settings: s }); pending.models(catalog); await pending.start();
       let finish;
       pending.ctx.ui.custom = () => new Promise(resolve => { finish = resolve; });
-      const choosing = pending.command("model"); await pause(); await stop(pending);
+      const choosing = pending.command(command); await pause(); await stop(pending);
       finish("google/gemini-fixture"); await choosing; eq(s.writes, []); eq(pending.requests.length, 0); await pending.shutdown();
     }
     const conflictStore = memory(), conflict = harness({ flag: null, conflict: true, settings: conflictStore }); conflict.models(catalog);
