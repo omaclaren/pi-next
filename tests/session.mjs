@@ -102,6 +102,16 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       assert.deepEqual(errors, []); checks++;
       return checks;
     }
+    const { CombinedAutocompleteProvider } = await import(pathToFileURL(join(modules, "@earendil-works/pi-tui/dist/index.js")).href);
+    const autocomplete = new CombinedAutocompleteProvider(session.extensionRunner.getRegisteredCommands().map(command => ({
+      name: command.invocationName, description: command.description,
+    })), cwd);
+    const prefix = "/next-prompt-r";
+    const suggestions = await autocomplete.getSuggestions([prefix], 0, prefix.length, { signal: new AbortController().signal });
+    const item = suggestions?.items.find(item => item.value.includes("next-prompt-recall"));
+    assert.ok(item, "registered alias appears in Pi's native slash-command autocomplete"); checks++;
+    const recalledCommand = autocomplete.applyCompletion([prefix], 0, prefix.length, item, suggestions.prefix).lines[0];
+    assert.equal(recalledCommand.trim(), "/next-prompt-recall"); checks++;
     assert.equal(prefixHistory ? editor instanceof host.CustomEditor : editor, prefixHistory ? true : undefined, "prefix history can run before selecting a model"); checks++;
     await session.prompt("/next-prompt status");
     assert.equal(pickerCalls, 0, "status does not start first-use setup"); checks++;
@@ -200,11 +210,11 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       await session.prompt("/next-prompt status");
       assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
     }
-    // Submit recall as a real terminal slash command: it must bypass new input/run activity.
+    // Submit the native-autocompleted alias through the real terminal path, without new input/run activity.
     const branchLength = session.sessionManager.getBranch().length;
     editor.handleInput("\x1b");
     assert.ok(!rendered(editor).includes("show me an example")); checks++;
-    editor.setText("/next-prompt recall"); editor.handleInput("\r");
+    editor.setText(recalledCommand); editor.handleInput("\r");
     await submitted; await new Promise(resolve => setImmediate(resolve));
     assert.ok(rendered(editor).includes("show me an example")); checks++;
     assert.equal(editor.getText(), ""); checks++;

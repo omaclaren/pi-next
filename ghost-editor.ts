@@ -38,7 +38,7 @@ export class GhostEditor extends PrefixHistoryEditor {
   private editKind(text: string): EditorEdit {
     const value = text.trimStart();
     if (value.startsWith("!")) return "shell";
-    if (value && ["/next-prompt recall", "/next-prompt status"].some(command =>
+    if (value && ["/next-prompt recall", "/next-prompt status", "/next-prompt-recall"].some(command =>
       command.startsWith(value) || command === value.trimEnd())) return "recall-command";
     return "edit";
   }

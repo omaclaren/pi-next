@@ -158,7 +158,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
 
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
   pi.registerFlag("prefix-history", { description: "Enable local prefix-filtered Up/Down history, independently of suggestions", type: "boolean" });
-  pi.registerCommand("next-prompt", {
+  const nextPromptCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Start suggestions; model, on, off, status, recall",
     handler: async (args, ctx) => {
       const command = args.trim() || "on", commandEpoch = ++modelEpoch;
@@ -220,6 +220,11 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
       const tokens = usageReports ? `${inputTokens} in / ${outputTokens} out` : "not reported";
       ctx.ui.notify(`Next-prompt: ${enabled ? "on" : "off"}; model: ${label}; last error: ${lastError ?? "none"}; attempts: ${attempts}; offered: ${offered}; last outcome: ${lastOutcome}. Reported tokens: ${tokens} (${usageReports}/${attempts} reports).`, "info");
     },
+  };
+  pi.registerCommand("next-prompt", nextPromptCommand);
+  pi.registerCommand("next-prompt-recall", {
+    description: "Recall the last next-prompt suggestion",
+    handler: (_args, ctx) => nextPromptCommand.handler("recall", ctx),
   });
 
   pi.on("session_start", (_event, ctx) => {

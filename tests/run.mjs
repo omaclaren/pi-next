@@ -75,7 +75,8 @@ function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tu
   };
   return { ctx, requests, notices, emit, start, begin, finish, get editor() { return editor; }, get factory() { return factory; },
     entries: () => entries, replaceEntries: x => { entries = x; }, project: x => { projection = x; },
-    command: text => commands.get("next-prompt").handler(text, ctx), queue: x => { queued = x; }, setIdle: x => { idle = x; },
+    command: text => commands.get("next-prompt").handler(text, ctx),
+    namedCommand: (name, args = "") => commands.get(name).handler(args, ctx), queue: x => { queued = x; }, setIdle: x => { idle = x; },
     session: x => { session = x; }, oauth: x => { oauth = x; }, authSource: x => { authSource = x; }, available: x => { available = x; },
     selected: x => { selected = x; }, models: x => { catalog = x; }, get authReads() { return authReads; }, setFactory: x => { factory = x; },
     settleResponse: async (i = 0, response = assistant()) => { requests[i].task.resolve(response); await pause(); }, shutdown: () => emit("session_shutdown", { reason: "quit" }) };
@@ -234,7 +235,7 @@ for (const change of [h => h.available(false), h => h.selected(undefined)]) {
   const result = await loader.loadExtensions([join(project, "index.ts")], project);
   eq(result.errors, []); eq(result.extensions.length, 1);
   const extension = result.extensions[0];
-  ok(extension.commands.has("next-prompt")); ok(extension.flags.has("next-prompt-model"));
+  ok(extension.commands.has("next-prompt")); ok(extension.commands.has("next-prompt-recall")); ok(extension.flags.has("next-prompt-model"));
   ok(extension.handlers.has("agent_settled")); ok(!extension.tools.size);
 }
 {
@@ -289,6 +290,24 @@ for (const change of [h => h.available(false), h => h.selected(undefined)]) {
 async function withOffer(options) {
   const h = harness(options); await h.start(); await h.begin(); await h.finish();
   await h.settleResponse(0, assistant("RECALL_CANDIDATE")); return h;
+}
+// The autocomplete-friendly alias shares recall's cache, readiness checks and no-request behaviour.
+for (const prefixHistory of [false, true]) {
+  const h = await withOffer({ prefixHistory }); h.editor.handleInput("\x1b");
+  await h.namedCommand("next-prompt-recall");
+  ok(rendered(h.editor).includes("RECALL_CANDIDATE")); eq(h.editor.getText(), ""); eq(h.requests.length, 1);
+  h.editor.setText("keep my draft"); await h.namedCommand("next-prompt-recall");
+  eq(h.editor.getText(), "keep my draft"); ok(h.notices.at(-1).text.includes("idle, empty"));
+  h.editor.setText(""); h.queue(true); await h.namedCommand("next-prompt-recall");
+  ok(!rendered(h.editor).includes("RECALL_CANDIDATE")); eq(h.requests.length, 1);
+  h.queue(false); await h.namedCommand("next-prompt-recall"); ok(rendered(h.editor).includes("RECALL_CANDIDATE"));
+  await h.command("status"); ok(h.notices.at(-1).text.includes("attempts: 1; offered: 1; last outcome: recalled"));
+  await h.shutdown();
+}
+for (const mode of ["tui", "rpc", "print"]) {
+  const h = harness({ mode }); await h.start(); await h.namedCommand("next-prompt-recall");
+  eq(h.requests.length, 0); ok(h.notices.at(-1).text.includes(mode === "tui" ? "No suggestion" : "terminal-only"));
+  await h.shutdown();
 }
 for (const dismiss of [
   h => h.editor.handleInput("\x1b"),

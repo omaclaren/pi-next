@@ -33,13 +33,13 @@ After Pi finishes a reply, a suggestion may appear if the editor is empty.
 
 ```text
 /next-prompt model
-/next-prompt recall
+/next-prompt-recall
 /next-prompt status
 /next-prompt off
 /next-prompt on
 ```
 
-`model` changes the suggestion model. `recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
+`model` changes the suggestion model. `/next-prompt-recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. It appears in Pi's slash-command autocomplete; `/next-prompt recall` also works. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
 
 Local `!`/`!!` commands temporarily hide an active suggestion. The same suggestion returns after the command finishes, once the editor is empty and idle. An already-running prediction can finish during that detour and appear afterward; no extra request is made. Escape, ordinary prompt editing and cancelled commands stop automatic return. Explicit recall remains available.
 

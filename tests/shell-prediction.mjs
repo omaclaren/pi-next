@@ -25,10 +25,11 @@ export async function checkShellPrediction({ harness, assistant, usageResponse, 
           const result = bashEntry({ ...fields, ...resultFields });
           if (deferBash) results.push(result); else h.entries().push(result);
         })();
-      } else if (text.startsWith("/next-prompt ")) command = h.command(text.slice(13));
+      } else if (text === "/next-prompt-recall") command = h.namedCommand("next-prompt-recall");
+      else if (text.startsWith("/next-prompt ")) command = h.command(text.slice(13));
     };
     return { submitted, wait: () => shell, finish: () => h.entries().push(...results.splice(0)),
-      issue: async args => { type(h.editor, `/next-prompt ${args}`); h.editor.handleInput("\r"); await command; } };
+      issue: async (args, alias = false) => { type(h.editor, alias ? "/next-prompt-recall" : `/next-prompt ${args}`); h.editor.handleInput("\r"); await command; } };
   }
   for (const prefixHistory of [false, true]) for (const timing of ["typing", "running", "finished"]) {
     const h = await pending({ prefixHistory }), t = terminal(h, timing === "running");
@@ -62,7 +63,7 @@ export async function checkShellPrediction({ harness, assistant, usageResponse, 
     type(h.editor, "!echo 1"); h.editor.handleInput("\r"); await t.wait();
     await t.issue("status"); eq(h.requests[0].options.signal.aborted, false);
     ok(h.notices.at(-1).text.includes("request-pending:shell"));
-    await t.issue("recall"); ok(h.notices.at(-1).text.includes("still being generated"));
+    await t.issue("recall", true); ok(h.notices.at(-1).text.includes("still being generated"));
     eq(h.requests.length, 1); eq(h.requests[0].options.signal.aborted, false);
     await h.settleResponse(0, response()); ok(rendered(h.editor).includes(candidate));
     await t.issue("recall"); ok(rendered(h.editor).includes(candidate)); eq(h.requests.length, 1);
