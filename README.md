@@ -39,7 +39,7 @@ After Pi finishes a reply, a suggestion may appear if the editor is empty.
 /next-prompt on
 ```
 
-`model` changes the suggestion model. `recall` brings back the last suggestion for the same exchange without another model call. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
+`model` changes the suggestion model. `recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
 
 Each prediction makes an extra model request using a few recent messages and the latest reply. It doesn't generate periodically while idle. The extension uses Pi's custom-editor slot, so it can conflict with other custom-editor extensions.
 

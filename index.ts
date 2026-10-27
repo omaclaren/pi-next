@@ -26,7 +26,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
   let activity: Activity | undefined;
   let pending: AbortController | undefined;
   let editor: GhostEditor | undefined;
-  // One offered candidate in RAM, retained across dismissal only; never a suggestion history.
+  // One offered candidate in RAM for the last model exchange; never a suggestion history.
   let recallCandidate: { text: string; session: string; leaf: string | null; editor: GhostEditor } | undefined;
   let ownFactory: EditorFactory | undefined;
   const localUsers = new Set<string>();
@@ -65,6 +65,16 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     };
     ctx.ui.setEditorComponent(ownFactory);
     return true;
+  }
+
+  /** A local shell result advances the leaf without starting a new model exchange. */
+  function sameExchange(leaf: string | null, ctx: ExtensionContext): boolean {
+    const current = ctx.sessionManager.getLeafId();
+    if (leaf === current) return true;
+    if (leaf === null) return false;
+    const branch = ctx.sessionManager.getBranch(), anchor = branch.findIndex(entry => entry.id === leaf);
+    return anchor >= 0 && branch.at(-1)?.id === current && branch.slice(anchor + 1).every(entry =>
+      entry.type === "message" && entry.message.role === "bashExecution");
   }
 
   function notReady(ctx: ExtensionContext): string | undefined {
@@ -107,7 +117,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
         const saved = recallCandidate;
         if (!saved) { ctx.ui.notify("No suggestion to recall for this exchange.", "info"); return; }
-        if (saved.session !== ctx.sessionManager.getSessionId() || saved.leaf !== ctx.sessionManager.getLeafId() ||
+        if (saved.session !== ctx.sessionManager.getSessionId() || !sameExchange(saved.leaf, ctx) ||
             saved.editor !== editor || ctx.ui.getEditorComponent() !== ownFactory) {
           recallCandidate = undefined;
           ctx.ui.notify("The previous suggestion is no longer current.", "info"); return;

@@ -110,7 +110,12 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries, "first-use setup adds no conversation entry"); checks++;
     // Run the shipped terminal submit callback, rather than inventing the input/start/settle order.
     const terminal = { defaultEditor: editor, editor, session,
-      flushPendingBashComponents() {}, onInputCallback: text => { submitted = session.prompt(text); } };
+      flushPendingBashComponents() {}, onInputCallback: text => { submitted = session.prompt(text); },
+      // Persist fixture shell results exactly where the live session advances its leaf. No process is run.
+      handleBashCommand: async (command, excluded) => {
+        session.sessionManager.appendMessage({ role: "bashExecution", command, output: "fixture shell output",
+          exitCode: 0, cancelled: false, truncated: false, excludeFromContext: excluded, timestamp: 0 });
+      }, updateEditorBorderColor() {} };
     InteractiveMode.prototype.setupEditorSubmitHandler.call(terminal);
     editor.setText("Explain closures briefly. I may ask for an example next.");
     editor.handleInput("\r");
@@ -123,6 +128,21 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     await session.prompt("/next-prompt status");
     assert.ok(notices.at(-1).includes("attempts: 1; offered: 1; last outcome: offered")); checks++;
     assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)"), "meter excludes main-agent usage and counts cache input once"); checks++;
+    // Reproduce the live regression: shell submission advances the real session leaf, not the model exchange.
+    const replyLeaf = session.sessionManager.getLeafId();
+    for (const command of ["!echo 1", "!!echo 2"]) {
+      editor.setText(command); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      assert.notEqual(session.sessionManager.getLeafId(), replyLeaf); checks++;
+      assert.ok(!rendered(editor).includes("show me an example"), "shell output does not auto-restore the ghost"); checks++;
+      const afterBashEntries = session.sessionManager.getBranch().length;
+      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+      assert.ok(rendered(editor).includes("show me an example"), "explicit recall survives a real bash leaf change"); checks++;
+      assert.equal(editor.getText(), ""); checks++;
+      assert.equal(session.sessionManager.getBranch().length, afterBashEntries); checks++;
+      assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
+      await session.prompt("/next-prompt status");
+      assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
+    }
     // Submit recall as a real terminal slash command: it must bypass new input/run activity.
     const branchLength = session.sessionManager.getBranch().length;
     editor.handleInput("\x1b");
