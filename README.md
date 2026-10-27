@@ -41,7 +41,7 @@ After Pi finishes a reply, a suggestion may appear if the editor is empty.
 
 `model` changes the suggestion model. `recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
 
-If a prediction is already running when you start a `!`/`!!` command, it finishes quietly and keeps a valid result for explicit recall. It won't appear automatically after the command. Early recall reports that it is still being generated; ordinary prompt editing or Escape still cancels pending work.
+Local `!`/`!!` commands temporarily hide an active suggestion. The same suggestion returns after the command finishes, once the editor is empty and idle. An already-running prediction can finish during that detour and appear afterward; no extra request is made. Escape, ordinary prompt editing and cancelled commands stop automatic return. Explicit recall remains available.
 
 Each prediction makes an extra model request using a few recent messages and the latest reply. It doesn't generate periodically while idle. The extension uses Pi's custom-editor slot, so it can conflict with other custom-editor extensions.
 

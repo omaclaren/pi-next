@@ -13,7 +13,8 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   const fetchBefore = globalThis.fetch, agentDirBefore = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(cwd, "agent");
   globalThis.fetch = () => { throw new Error("Network is forbidden in this offline test"); };
-  let session, releasePrediction;
+  let session, releasePrediction, releaseShell, shellWork;
+  const shellGate = shellDuringPrediction === "running" ? new Promise(resolve => { releaseShell = resolve; }) : undefined;
   const predictionGate = shellDuringPrediction ? new Promise(resolve => { releasePrediction = resolve; }) : undefined;
   let checks = 0;
   try {
@@ -112,14 +113,19 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(requests.length, 0, "first-use setup makes no prediction request"); checks++;
     assert.equal(mainCalls, 0); checks++;
     assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries, "first-use setup adds no conversation entry"); checks++;
-    // Run the shipped terminal submit callback, rather than inventing the input/start/settle order.
-    const terminal = { defaultEditor: editor, editor, session,
+    // The next-prompt observer must pass through to this fixture executor unchanged.
+    const shellHandlers = loaded.extensions[0].handlers.get("user_bash") ?? [];
+    shellHandlers.push(async () => {
+      if (shellGate) await shellGate;
+      return { result: { output: "fixture shell output", exitCode: 0, cancelled: false, truncated: false } };
+    });
+    loaded.extensions[0].handlers.set("user_bash", shellHandlers);
+    // Run both shipped terminal submit and bash-result paths. No process is run.
+    const terminal = { defaultEditor: editor, editor, session, sessionManager: session.sessionManager, ui: screen,
+      chatContainer: { addChild() {} }, pendingMessagesContainer: { addChild() {} },
       flushPendingBashComponents() {}, onInputCallback: text => { submitted = session.prompt(text); },
-      // Persist fixture shell results exactly where the live session advances its leaf. No process is run.
-      handleBashCommand: async (command, excluded) => {
-        session.sessionManager.appendMessage({ role: "bashExecution", command, output: "fixture shell output",
-          exitCode: 0, cancelled: false, truncated: false, excludeFromContext: excluded, timestamp: 0 });
-      }, updateEditorBorderColor() {} };
+      handleBashCommand(command, excluded) { shellWork = InteractiveMode.prototype.handleBashCommand.call(terminal, command, excluded); return shellWork; },
+      showError: error => errors.push(error), updateEditorBorderColor() {} };
     InteractiveMode.prototype.setupEditorSubmitHandler.call(terminal);
     editor.setText("Explain closures briefly. I may ask for an example next.");
     editor.handleInput("\r");
@@ -131,15 +137,35 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       const payload = JSON.stringify(requests[0].context);
       for (const char of "!echo PRIVATE_PENDING_COMMAND") editor.handleInput(char);
       assert.equal(requests[0].options.signal.aborted, false); checks++;
+      if (shellDuringPrediction === "typing") {
+        releasePrediction(); await new Promise(resolve => setImmediate(resolve));
+        assert.ok(!rendered(editor).includes("show me an example")); checks++;
+        assert.equal(editor.getText(), "!echo PRIVATE_PENDING_COMMAND"); checks++;
+      }
       editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      if (shellGate) {
+        const leafBeforeResult = session.sessionManager.getLeafId();
+        releasePrediction(); await new Promise(resolve => setImmediate(resolve));
+        assert.ok(!rendered(editor).includes("show me an example"), "an empty editor is not proof that bash finished"); checks++;
+        assert.equal(session.sessionManager.getLeafId(), leafBeforeResult); checks++;
+        await session.prompt("/next-prompt recall");
+        assert.ok(notices.at(-1).includes("Wait for the shell command to finish")); checks++;
+        assert.ok(!rendered(editor).includes("show me an example")); checks++;
+        releaseShell(); await shellWork;
+      } else if (shellDuringPrediction !== "typing") {
+        editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+        assert.ok(notices.at(-1).includes("still being generated")); checks++;
+        assert.equal(requests[0].options.signal.aborted, false); checks++;
+        releasePrediction(); await new Promise(resolve => setImmediate(resolve));
+      }
       assert.equal(session.sessionManager.getBranch().at(-1).message.role, "bashExecution"); checks++;
+      assert.equal(session.sessionManager.getBranch().at(-1).message.output, "fixture shell output", "observer leaves execution to the fixture handler"); checks++;
       const entriesAfterBash = session.sessionManager.getBranch().length;
-      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
-      assert.ok(notices.at(-1).includes("still being generated")); checks++;
-      assert.equal(requests[0].options.signal.aborted, false); checks++;
-      releasePrediction(); await new Promise(resolve => setImmediate(resolve));
-      assert.ok(!rendered(editor).includes("show me an example"), "shell-held result is never automatically offered"); checks++;
+      assert.ok(rendered(editor).includes("show me an example"), "same pending result returns automatically after the actual bash result path"); checks++;
       assert.equal(editor.getText(), ""); checks++;
+      editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(mainCalls, 1, "Enter never submits the automatically restored ghost"); checks++;
+      assert.equal(requests.length, 1); checks++;
       editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
       assert.ok(rendered(editor).includes("show me an example")); checks++;
       assert.equal(editor.getText(), ""); checks++;
@@ -148,7 +174,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       assert.equal(JSON.stringify(requests[0].context), payload); checks++;
       assert.ok(!payload.includes("PRIVATE_PENDING_COMMAND")); checks++;
       await session.prompt("/next-prompt status");
-      assert.ok(notices.at(-1).includes("attempts: 1; offered: 0; last outcome: recalled")); checks++;
+      assert.ok(notices.at(-1).includes("attempts: 1; offered: 1; last outcome: recalled")); checks++;
       assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
       assert.deepEqual(errors, []); checks++;
       return checks;
@@ -161,9 +187,10 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     // Reproduce the live regression: shell submission advances the real session leaf, not the model exchange.
     const replyLeaf = session.sessionManager.getLeafId();
     for (const command of ["!echo 1", "!!echo 2"]) {
+      await session.prompt("/next-prompt recall");
       editor.setText(command); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
       assert.notEqual(session.sessionManager.getLeafId(), replyLeaf); checks++;
-      assert.ok(!rendered(editor).includes("show me an example"), "shell output does not auto-restore the ghost"); checks++;
+      assert.ok(rendered(editor).includes("show me an example"), "completed shell command restores the same ghost"); checks++;
       const afterBashEntries = session.sessionManager.getBranch().length;
       editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
       assert.ok(rendered(editor).includes("show me an example"), "explicit recall survives a real bash leaf change"); checks++;
@@ -261,7 +288,8 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.deepEqual(errors, []); checks++;
     return checks;
   } finally {
-    releasePrediction?.();
+    releasePrediction?.(); releaseShell?.();
+    await shellWork?.catch(() => {});
     session?.dispose();
     globalThis.fetch = fetchBefore;
     if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;

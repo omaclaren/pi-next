@@ -333,7 +333,7 @@ for (const prefixHistory of [false, true]) {
   const h = await withOffer({ prefixHistory });
   for (const fields of [{}, { excludeFromContext: true }, { exitCode: 1 }, { cancelled: true }]) {
     h.editor.setText("!echo 1"); h.editor.setText(""); h.entries().push(bashEntry(fields));
-    ok(!rendered(h.editor).includes("RECALL_CANDIDATE"), "shell completion never automatically restores a dismissed ghost");
+    ok(!rendered(h.editor).includes("RECALL_CANDIDATE"), "clearing a shell draft without submission does not restore a ghost");
     await h.command("recall");
     ok(rendered(h.editor).includes("RECALL_CANDIDATE"), "explicit recall survives shell-only additions after the same model reply");
     eq(h.editor.getText(), ""); eq(h.requests.length, 1, "shell recall makes no prediction request");
@@ -549,5 +549,7 @@ const { checkSession } = await import("./session.mjs");
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered });
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true });
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, historyOnly: true });
-checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true, shellDuringPrediction: true });
+for (const timing of [true, "typing", "running"]) {
+  checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true, shellDuringPrediction: timing });
+}
 console.log(`Passed ${checks} offline checks with real Pi ${JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version} editor/helpers and session lifecycle; provider calls mocked.`);

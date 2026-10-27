@@ -11,12 +11,16 @@ export class GhostEditor extends PrefixHistoryEditor {
   private readonly ghostKeys: KeybindingsManager;
   private inputDepth = 0;
   private notifiedDuringInput = false;
+  private readonly restore: (() => string | undefined) | undefined;
 
-  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: (kind: EditorEdit) => void, prefixHistory = false) {
+  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: (kind: EditorEdit) => void, prefixHistory = false, restore?: () => string | undefined) {
     super(tui, theme, keys, prefixHistory);
     this.edited = edited;
     this.ghostKeys = keys;
+    this.restore = restore;
   }
+
+  refreshGhost(): void { this.tui.requestRender(); }
 
   setGhost(text: string): boolean {
     if (this.getText() !== "" || this.isShowingAutocomplete() || !this.focused) return false;
@@ -95,6 +99,11 @@ export class GhostEditor extends PrefixHistoryEditor {
   }
 
   override render(width: number): string[] {
+    // Pi redraws after recording a local shell result. Reconcile only local ghost state:
+    // no polling, model calls, text insertion or recursive render requests.
+    if (!this.ghost && this.focused && this.getText() === "" && !this.isShowingAutocomplete()) {
+      this.ghost = this.restore?.();
+    }
     const lines = super.render(width);
     if (!this.ghost || !this.focused || this.getText() !== "" || this.isShowingAutocomplete()) return lines;
     const row = lines.findIndex(line => line.includes(CURSOR_MARKER));
