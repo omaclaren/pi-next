@@ -1,7 +1,7 @@
 {
   "name": "pi-next-prompt",
   "version": "0.1.0",
-  "description": "Opt-in terminal prompt suggestions for Pi using a separately selected OpenAI chat model",
+  "description": "Next-prompt suggestions for Pi",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "url": "https://github.com/omaclaren/pi-next-prompt/issues"
   },
   "keywords": ["pi-package", "pi-extension", "prompt-suggestions", "ghost-text"],
-  "files": ["index.ts", "core.ts", "ghost-editor.ts", "docs/", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["index.ts", "core.ts", "ghost-editor.ts", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "engines": {
     "node": ">=22.19.0"
   },
