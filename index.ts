@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 import { buildPayload, generate, looksRemote, ordinary, selectModel, textOnly, type Failure } from "./core.ts";
 import { GhostEditor } from "./ghost-editor.ts";
+import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
 
 const FLAG = "next-prompt-model";
 interface Activity {
@@ -13,9 +14,10 @@ interface Activity {
   completed: boolean;
 }
 
-/** Optional short timeout is a test seam, not a user configuration surface. */
-export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: number } = {}): void {
-  let enabled = false, selection = "", epoch = 0, blocked = 0;
+/** Optional timeout/settings injection keeps tests offline and out of real user configuration. */
+export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: number; settings?: ModelSettings } = {}): void {
+  const settings = options.settings ?? modelSettings();
+  let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0;
   let lastError: Failure | undefined;
   // Runtime-only, content-free diagnostics. Attempts count local generation starts, not billed HTTP requests.
   let attempts = 0, offered = 0, lastOutcome = "not-started";
@@ -41,7 +43,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     cancel();
   }
   function edited(): void { invalidate("cancelled:editor-input", true); }
-  function reset(): void { invalidate("cancelled:session-or-branch"); localUsers.clear(); blocked = 0; }
+  function reset(): void { modelEpoch++; invalidate("cancelled:session-or-branch"); localUsers.clear(); blocked = 0; }
   function fail(error: Failure): void { lastError = error; lastOutcome = `error:${error}`; }
 
   function install(ctx: ExtensionContext, rebuild = false): boolean {
@@ -80,13 +82,28 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     return undefined;
   }
 
-  pi.registerFlag(FLAG, { description: "Opt-in next-prompt chat model: openai/MODEL_ID (stored OAuth required)", type: "string" });
+  pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
   pi.registerCommand("next-prompt", {
-    description: "Next-prompt suggestions: on, off, status, recall (session-local)",
+    description: "Next-prompt: model, on, off, status, recall",
     handler: async (args, ctx) => {
-      const command = args.trim() || "status";
+      const command = args.trim() || "status", commandEpoch = ++modelEpoch;
       // Commands cancel pending generation/visible ghosts; recall may reuse an offered candidate.
       invalidate("cancelled:command", true);
+      if (command === "model" || command.startsWith("model ")) {
+        if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
+        if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Wait for Pi to finish before changing the suggestion model.", "info"); return; }
+        const requested = command.slice(5).trim() || await pickModel(ctx, selection);
+        if (commandEpoch !== modelEpoch || !requested) return;
+        if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Pi is busy. Try choosing the model again when it finishes.", "info"); return; }
+        const choice = selectModel(ctx, requested);
+        if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Could not select model: ${choice.error}.`, "warning"); return; }
+        if (!install(ctx)) { ctx.ui.notify("Another extension is using the custom editor.", "warning"); return; }
+        try { settings.save(requested); }
+        catch { fail("settings-error"); ctx.ui.notify("Could not save the next-prompt model.", "error"); return; }
+        selection = requested; enabled = true; lastError = undefined; recallCandidate = undefined; lastOutcome = "model-selected";
+        ctx.ui.notify(`Next-prompt model: ${selection}.`, "info");
+        return;
+      }
       if (command === "recall") {
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
         const saved = recallCandidate;
@@ -108,13 +125,14 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
         enabled = false;
         const choice = selectModel(ctx, selection);
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
-        if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Next-prompt stays off: ${choice.error}. Supply --${FLAG} openai/MODEL_ID at launch.`, "warning"); return; }
+        if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Next-prompt stays off: ${choice.error}. Use /next-prompt model to choose one.`, "warning"); return; }
         enabled = install(ctx);
         if (enabled) lastError = undefined;
       } else if (command !== "status") {
-        ctx.ui.notify("Usage: /next-prompt [on|off|status|recall]", "info"); return;
+        ctx.ui.notify("Usage: /next-prompt [model|on|off|status|recall]", "info"); return;
       }
-      const label = /^openai\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(selection) ? selection : "not selected";
+      const chosen = selectModel(ctx, selection);
+      const label = "model" in chosen ? `${chosen.model.provider}/${chosen.model.id}` : "not selected";
       const tokens = usageReports ? `${inputTokens} in / ${outputTokens} out` : "not reported";
       ctx.ui.notify(`Next-prompt: ${enabled ? "on" : "off"}; model: ${label}; last error: ${lastError ?? "none"}; attempts: ${attempts}; offered: ${offered}; last outcome: ${lastOutcome}. Reported tokens: ${tokens} (${usageReports}/${attempts} reports).`, "info");
     },
@@ -125,9 +143,13 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     reset(); editor = undefined; ownFactory = undefined; lastError = undefined;
     attempts = 0; offered = 0; lastOutcome = "not-started";
     usageReports = 0; inputTokens = 0; outputTokens = 0;
-    selection = String(pi.getFlag(FLAG) ?? "");
-    enabled = false;
-    if (!selection || ctx.mode !== "tui") return;
+    selection = ""; enabled = false;
+    if (ctx.mode !== "tui") return;
+    try {
+      const flag = pi.getFlag(FLAG);
+      selection = flag !== undefined ? String(flag) : settings.load();
+    } catch { fail("settings-error"); return; }
+    if (!selection) return;
     const choice = selectModel(ctx, selection);
     if ("error" in choice) { fail(choice.error); return; }
     enabled = install(ctx);

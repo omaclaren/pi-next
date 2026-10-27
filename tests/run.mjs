@@ -37,23 +37,25 @@ let nextId = 0;
 const entry = message => ({ type: "message", id: `entry-${++nextId}`, parentId: null, timestamp: new Date(0).toISOString(), message });
 const projected = e => ({ sourceEntry: e, messages: e.type === "message" ? [e.message] : [] });
 
-function harness({ flag = "openai/gpt-6-luna", mode = "tui", timeoutMs = 40, conflict = false } = {}) {
+function harness({ flag = "openai/gpt-6-luna", mode = "tui", timeoutMs = 40, conflict = false,
+  settings = { load: () => "", save() {} } } = {}) {
   const handlers = new Map(), commands = new Map(), requests = [], notices = [];
   let factory = conflict ? () => {} : undefined, editor, entries = [], projection, session = "session-a", idle = true, queued = false;
-  let selected = model, available = true, oauth = true, authSource = "stored";
-  const pi = { registerFlag() {}, getFlag: () => flag, registerCommand: (name, value) => commands.set(name, value),
+  let selected = model, catalog, available = true, oauth = true, authSource = "stored", authReads = 0;
+  const pi = { registerFlag() {}, getFlag: () => flag ?? undefined, registerCommand: (name, value) => commands.set(name, value),
     on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); } };
   const ui = { getEditorText: () => editor?.getText() ?? "", getEditorComponent: () => factory,
     setEditorComponent: value => { factory = value; editor = value ? value(screen, theme, new KeybindingsManager()) : undefined;
       if (editor) { editor.setText(""); editor.focused = true; } }, notify: (text, level) => notices.push({ text, level }) };
-  const registry = { getModelOfType: (type, provider, id) => type === "chat" && provider === selected?.provider && id === selected?.id ? selected : undefined,
-    getAvailable: () => available && selected ? [selected] : [], getProviderAuthStatus: () => ({ configured: true, source: authSource }), isUsingOAuth: () => oauth,
+  const known = () => (catalog ?? (selected ? [selected] : [])).filter(m => m.type === "chat");
+  const registry = { getModelOfType: (type, provider, id) => type === "chat" ? known().find(m => m.provider === provider && m.id === id) : undefined,
+    getAvailable: () => available ? known() : [], getProviderAuthStatus: () => { authReads++; return { configured: true, source: authSource }; }, isUsingOAuth: () => { authReads++; return oauth; },
     streamSimple: (m, context, options) => { const task = deferred(); requests.push({ model: m, context, options, task }); return { result: () => task.promise }; } };
   const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", ui, modelRegistry: registry, isIdle: () => idle, hasPendingMessages: () => queued,
     model: { ...model, id: "gpt-6.1-sol" }, thinkingLevel: "xhigh",
     sessionManager: { getSessionId: () => session, getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries,
       buildSessionProjection: () => ({ entries: projection ?? entries.map(projected) }) } };
-  registerNextPrompt(pi, { timeoutMs });
+  registerNextPrompt(pi, { timeoutMs, settings });
   const emit = async (name, event = {}) => { for (const handler of handlers.get(name) ?? []) await handler({ type: name, ...event }, ctx); };
   const start = () => emit("session_start", { reason: "startup" });
   const begin = async ({ text = "show me the relevant function", source = "interactive", streamingBehavior, messageType = "user", images } = {}) => {
@@ -74,7 +76,7 @@ function harness({ flag = "openai/gpt-6-luna", mode = "tui", timeoutMs = 40, con
     entries: () => entries, replaceEntries: x => { entries = x; }, project: x => { projection = x; },
     command: text => commands.get("next-prompt").handler(text, ctx), queue: x => { queued = x; }, setIdle: x => { idle = x; },
     session: x => { session = x; }, oauth: x => { oauth = x; }, authSource: x => { authSource = x; }, available: x => { available = x; },
-    selected: x => { selected = x; }, setFactory: x => { factory = x; },
+    selected: x => { selected = x; }, models: x => { catalog = x; }, get authReads() { return authReads; }, setFactory: x => { factory = x; },
     settleResponse: async (i = 0, response = assistant()) => { requests[i].task.resolve(response); await pause(); }, shutdown: () => emit("session_shutdown", { reason: "quit" }) };
 }
 
@@ -187,7 +189,7 @@ for (const invalidate of [
   const h = harness(); await h.start(); await h.begin(); await h.finish(); await h.settleResponse();
   await h.begin({ source: "extension", text: "next non-local turn" }); await h.finish(); eq(h.requests.length, 1, "no sticky terminal provenance"); await h.shutdown();
 }
-for (const change of [h => h.oauth(false), h => h.authSource("runtime"), h => h.available(false), h => h.selected(undefined)]) {
+for (const change of [h => h.available(false), h => h.selected(undefined)]) {
   const h = harness(); await h.start(); change(h); await h.begin(); await h.finish(); eq(h.requests.length, 0); await h.shutdown();
 }
 {
@@ -200,8 +202,10 @@ for (const change of [h => h.oauth(false), h => h.authSource("runtime"), h => h.
   await h.begin(); await h.finish(); eq(h.requests.length, 2, "non-cooperating timeout releases local pending state"); await h.shutdown();
 }
 {
-  const h = harness(); await h.start(); await h.begin(); await h.finish(); h.oauth(false);
-  assert.throws(() => h.requests[0].options.transformHeaders({})); checks++; await h.shutdown();
+  const h = harness(); h.oauth(false); h.authSource("runtime"); await h.start(); await h.begin(); await h.finish();
+  eq(h.requests.length, 1); eq(h.authReads, 0, "authentication is delegated to Pi");
+  eq(h.requests[0].options.transformHeaders, undefined); eq(h.requests[0].options.transport, undefined);
+  await h.shutdown();
 }
 {
   const h = harness(); await h.start(); await h.begin(); await h.finish();
@@ -493,6 +497,8 @@ for (const [response, expected, offered] of [
   ok(h.notices.at(-1).text.includes("attempts: 1; offered: 0; last outcome: error:request-failed"));
   ok(!h.notices.at(-1).text.includes("PRIVATE_PROVIDER_FIXTURE")); await h.shutdown();
 }
+const { checkSettings } = await import("./settings.mjs");
+checks += await checkSettings({ harness, jiti, host, tui, model, project, pause, KeybindingsManager });
 const { checkSession } = await import("./session.mjs");
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered });
 console.log(`Passed ${checks} offline checks with real Pi ${JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version} editor/helpers and session lifecycle; provider calls mocked.`);

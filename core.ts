@@ -90,17 +90,21 @@ export function normaliseSuggestion(response: AssistantMessage): string | undefi
   return inspectSuggestion(response).text;
 }
 
-export type Failure = "missing-model" | "unavailable-model" | "oauth-required" | "timeout" | "request-failed" | "context-unavailable" | "editor-conflict";
+export type Failure = "missing-model" | "unavailable-model" | "settings-error" | "timeout" | "request-failed" | "context-unavailable" | "editor-conflict";
 export type Selection = { model: Model<Api> } | { error: Failure };
 
-/** Intentionally native OpenAI-only in this draft; never select an API-key fallback. */
+/** Split at the first slash: model IDs can contain namespaces, slashes or colons. */
+export function isModelRef(value: unknown): value is string {
+  return typeof value === "string" && value.indexOf("/") > 0 && value.indexOf("/") < value.length - 1 &&
+    !/[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069]/u.test(value);
+}
+
+/** Pi owns model availability, provider configuration and request-time authentication. */
 export function selectModel(ctx: ExtensionContext, selection: string): Selection {
-  const match = /^(openai)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(selection);
-  if (!match) return { error: "missing-model" };
-  const model = ctx.modelRegistry.getModelOfType("chat", match[1], match[2]);
+  if (!isModelRef(selection)) return { error: "missing-model" };
+  const slash = selection.indexOf("/");
+  const model = ctx.modelRegistry.getModelOfType("chat", selection.slice(0, slash), selection.slice(slash + 1));
   if (!model || !ctx.modelRegistry.getAvailable().some(m => m.provider === model.provider && m.id === model.id)) return { error: "unavailable-model" };
-  const auth = ctx.modelRegistry.getProviderAuthStatus(model.provider);
-  if (auth.source !== "stored" || !ctx.modelRegistry.isUsingOAuth(model)) return { error: "oauth-required" };
   return { model };
 }
 
@@ -109,7 +113,7 @@ export function requestOptions(model: Model<Api>): ModelsSimpleStreamOptions {
   const level = levels[0];
   // Pi's simple API uses undefined for 'off'. No main-session effort is passed.
   return { reasoning: level === "off" ? undefined : level, maxTokens: 256,
-    maxRetries: 0, timeoutMs: TIMEOUT_MS, cacheRetention: "none", toolChoice: "none", transport: "sse" };
+    maxRetries: 0, timeoutMs: TIMEOUT_MS, cacheRetention: "none", toolChoice: "none" };
 }
 
 export interface ReportedTokens { input: number; output: number }
@@ -149,14 +153,7 @@ export async function generate(ctx: ExtensionContext, selection: string, payload
       systemPrompt: SYSTEM_PROMPT,
       messages: [{ role: "user", content: [{ type: "text", text: payload }], timestamp: Date.now() }],
       tools: [],
-    }, { ...requestOptions(selected.model), signal: controller.signal,
-      transformHeaders: headers => {
-        // Repeat the non-secret guard immediately before provider dispatch.
-        const check = selectModel(ctx, selection);
-        if ("error" in check) throw new Error("Suggestion OAuth guard failed");
-        return headers;
-      },
-    }).result();
+    }, { ...requestOptions(selected.model), signal: controller.signal }).result();
     const usage = reportedTokens(response);
     // Account for returned usage even after local cancellation/timeout or output rejection.
     // The caller separately guards the lifetime of its in-memory meter.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,8 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   const { InteractiveMode } = await import(pathToFileURL(join(sdk, "dist/modes/interactive/interactive-mode.js")).href);
   const { loadExtensions } = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
   const cwd = mkdtempSync(join(tmpdir(), "pi-next-prompt-session-"));
-  const fetchBefore = globalThis.fetch;
+  const fetchBefore = globalThis.fetch, agentDirBefore = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(cwd, "agent");
   globalThis.fetch = () => { throw new Error("Network is forbidden in this offline test"); };
   let session;
   let checks = 0;
@@ -28,15 +29,23 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
         if (editor) { editor.setText(""); editor.focused = true; }
       },
       notify: text => notices.push(text),
+      custom: factory => new Promise(resolve => {
+        const picker = factory(screen, { fg: (_color, text) => text }, new KeybindingsManager(), resolve);
+        picker.focused = true; picker.render(60);
+        for (const character of "gemini") picker.handleInput(character);
+        picker.handleInput("\r");
+      }),
     };
+    const google = { ...model, provider: "google", id: "gemini-fixture", api: "google-generative-ai", name: "Gemini fixture" };
+    const catalog = [model, google];
     const runtime = {
-      getModels: () => [model], getAvailableSnapshot: () => [model],
-      getModel: (provider, id) => provider === model.provider && id === model.id ? model : undefined,
-      getModelOfType: (type, provider, id) => type === "chat" && provider === model.provider && id === model.id ? model : undefined,
+      getModels: () => catalog, getAvailableSnapshot: () => catalog,
+      getModel: (provider, id) => catalog.find(m => m.provider === provider && m.id === id),
+      getModelOfType: (type, provider, id) => type === "chat" ? catalog.find(m => m.provider === provider && m.id === id) : undefined,
       getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
       isUsingOAuth: () => true, hasConfiguredAuth: () => true,
       streamSimple: (_model, context, options) => {
-        requests.push({ context, options });
+        requests.push({ model: _model, context, options });
         const response = assistant(prediction);
         return { result: async () => ({ ...response, usage: { ...response.usage,
           input: 100, cacheRead: 40, cacheWrite: 10, output: 20, reasoning: 5, totalTokens: 170 } }) };
@@ -128,10 +137,28 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.ok(notices.at(-1).includes("attempts: 3; offered: 1")); checks++;
     assert.ok(notices.at(-1).includes("Reported tokens: 450 in / 60 out (3/3 reports)"), "abstention/rejection still contribute reported usage"); checks++;
     assert.deepEqual(errors, []); checks++;
+    const beforePickerEntries = session.sessionManager.getBranch().length;
+    editor.setText("/next-prompt model"); editor.handleInput("\r"); await submitted;
+    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "next-prompt.json"), "utf8")), { model: "google/gemini-fixture" }); checks++;
+    assert.equal(requests.length, 3); checks++;
+    assert.equal(mainCalls, 3); checks++;
+    assert.equal(session.sessionManager.getBranch().length, beforePickerEntries, "model picker adds no conversation entry"); checks++;
+    assert.equal(agent.state.model, model, "choosing a suggestion model leaves the main model unchanged"); checks++;
+    assert.equal(agent.state.thinkingLevel, "off"); checks++;
+    prediction = "show me a concrete example";
+    editor.setText("Explain that more briefly."); editor.handleInput("\r"); await submitted;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.length, 4); checks++;
+    assert.equal(requests.at(-1).model, google); checks++;
+    await session.prompt("/next-prompt status");
+    assert.ok(notices.at(-1).includes("Reported tokens: 600 in / 80 out (4/4 reports)"), "changing models retains the session's prediction usage"); checks++;
+    assert.deepEqual(errors, []); checks++;
     return checks;
   } finally {
     session?.dispose();
     globalThis.fetch = fetchBefore;
+    if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = agentDirBefore;
     rmSync(cwd, { recursive: true, force: true });
   }
 }
