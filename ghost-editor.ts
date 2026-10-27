@@ -2,14 +2,20 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { PrefixHistoryEditor } from "./prefix-history.ts";
 import { CURSOR_MARKER, matchesKey, renderFakeCursor, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
+export type EditorEdit = "edit" | "shell" | "recall-command";
+
 /** Render-only ghost state; it never changes getText(), history or onSubmit. */
 export class GhostEditor extends PrefixHistoryEditor {
   private ghost: string | undefined;
-  private edited: (() => void) | undefined;
+  private edited: ((kind: EditorEdit) => void) | undefined;
+  private readonly ghostKeys: KeybindingsManager;
+  private inputDepth = 0;
+  private notifiedDuringInput = false;
 
-  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: () => void, prefixHistory = false) {
+  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: (kind: EditorEdit) => void, prefixHistory = false) {
     super(tui, theme, keys, prefixHistory);
     this.edited = edited;
+    this.ghostKeys = keys;
   }
 
   setGhost(text: string): boolean {
@@ -25,35 +31,67 @@ export class GhostEditor extends PrefixHistoryEditor {
     this.tui.requestRender();
   }
 
-  private invalidateInput(): void {
+  private editKind(text: string): EditorEdit {
+    const value = text.trimStart();
+    if (value.startsWith("!")) return "shell";
+    if (value && ["/next-prompt recall", "/next-prompt status"].some(command =>
+      command.startsWith(value) || command === value.trimEnd())) return "recall-command";
+    return "edit";
+  }
+
+  private invalidateInput(kind: EditorEdit = "edit", immediate = false): void {
     this.clearGhost();
-    this.edited?.();
+    if (!this.inputDepth || immediate) this.edited?.(kind);
+    if (this.inputDepth && immediate) this.notifiedDuringInput = true;
   }
 
   override setText(text: string): void {
-    this.invalidateInput();
+    this.clearGhost();
     super.setText(text);
+    this.invalidateInput(this.editKind(this.getText()));
   }
 
   override insertTextAtCursor(text: string): void {
-    this.invalidateInput();
+    this.clearGhost();
     super.insertTextAtCursor(text);
+    this.invalidateInput(this.editKind(this.getText()));
   }
 
   override handleInput(data: string): void {
     const suggestion = this.getText() === "" && !this.isShowingAutocomplete() && this.focused ? this.ghost : undefined;
     if (suggestion && (matchesKey(data, "right") || matchesKey(data, "tab"))) {
-      this.invalidateInput();
+      this.invalidateInput("edit", true);
       super.insertTextAtCursor(suggestion); // Insertion only; never invoke onSubmit.
       return;
     }
     if (suggestion && matchesKey(data, "escape")) {
-      this.invalidateInput();
+      this.invalidateInput("edit", true);
       return;
     }
-    // Navigation is conservative too: it may open history, a selector or a dialog.
-    this.invalidateInput();
-    super.handleInput(data);
+    const keys = this.ghostKeys;
+    if (keys.matches(data, "app.interrupt") || keys.matches(data, "tui.select.cancel") || keys.matches(data, "app.clear")) {
+      this.invalidateInput("edit", true);
+      super.handleInput(data);
+      return;
+    }
+    if (keys.matches(data, "tui.input.submit") || keys.matches(data, "app.message.followUp")) {
+      // Notify before onSubmit can start a new model exchange. Submission clears the text internally.
+      const before = this.getText();
+      this.invalidateInput(this.editKind(before), true);
+      super.handleInput(data);
+      // Enter can complete a non-slash autocomplete item without submitting it.
+      const after = this.getText();
+      if (after && after !== before) this.invalidateInput(this.editKind(after));
+      return;
+    }
+    this.clearGhost();
+    if (!this.inputDepth) this.notifiedDuringInput = false;
+    this.inputDepth++;
+    try { super.handleInput(data); }
+    finally { this.inputDepth--; }
+    if (!this.inputDepth && this.notifiedDuringInput) { this.notifiedDuringInput = false; return; }
+    // Inspect the actual edited text, including paste/history/autocomplete and encoded printable keys.
+    this.invalidateInput(this.editKind(this.getText()));
   }
 
   override render(width: number): string[] {

@@ -127,6 +127,14 @@ function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tu
   e.clearGhost(); e.onCtrlD = () => { edited += 100; }; const before = edited; e.handleInput("\x04"); ok(edited >= before + 100, "exit reaches the real base editor");
 }
 
+// A batched paste + Enter re-enters handleInput; cancellation must happen before onSubmit, not after it.
+{
+  const events = [], e = new GhostEditor(screen, theme, new KeybindingsManager(), kind => events.push(kind));
+  e.focused = true; e.onSubmit = text => events.push(`submitted:${text}`);
+  e.handleInput("\x1b[200~ordinary prompt\x1b[201~\r");
+  eq(events, ["edit", "submitted:ordinary prompt"]);
+}
+
 // Registered lifecycle handlers with a mocked provider and real ghost editor.
 {
   const h = harness(); await h.start(); eq(h.requests.length, 0); await h.begin(); await h.finish();
@@ -531,6 +539,8 @@ for (const [response, expected, offered] of [
   ok(h.notices.at(-1).text.includes("attempts: 1; offered: 0; last outcome: error:request-failed"));
   ok(!h.notices.at(-1).text.includes("PRIVATE_PROVIDER_FIXTURE")); await h.shutdown();
 }
+const { checkShellPrediction } = await import("./shell-prediction.mjs");
+checks += await checkShellPrediction({ harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
 const { checkHistory } = await import("./history.mjs");
 checks += await checkHistory({ harness, jiti, host, tui, model, project, sdk, modules, KeybindingsManager, screen, theme, rendered, entry, user, assistant, projected });
 const { checkSettings } = await import("./settings.mjs");
@@ -539,4 +549,5 @@ const { checkSession } = await import("./session.mjs");
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered });
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true });
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, historyOnly: true });
+checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true, shellDuringPrediction: true });
 console.log(`Passed ${checks} offline checks with real Pi ${JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version} editor/helpers and session lifecycle; provider calls mocked.`);

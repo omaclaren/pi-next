@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Real Pi lifecycle and terminal submit handler, with synthetic context and no network/auth store. */
-export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory = false, historyOnly = false }) {
+export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory = false, historyOnly = false, shellDuringPrediction = false }) {
   const { Agent } = await import(pathToFileURL(join(modules, "@earendil-works/pi-agent-core/dist/index.js")).href);
   const { InteractiveMode } = await import(pathToFileURL(join(sdk, "dist/modes/interactive/interactive-mode.js")).href);
   const { loadExtensions } = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
@@ -13,7 +13,8 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   const fetchBefore = globalThis.fetch, agentDirBefore = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(cwd, "agent");
   globalThis.fetch = () => { throw new Error("Network is forbidden in this offline test"); };
-  let session;
+  let session, releasePrediction;
+  const predictionGate = shellDuringPrediction ? new Promise(resolve => { releasePrediction = resolve; }) : undefined;
   let checks = 0;
   try {
     const loaded = await loadExtensions([join(project, historyOnly ? "history-only.ts" : "index.ts")], cwd);
@@ -48,8 +49,11 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       streamSimple: (_model, context, options) => {
         requests.push({ model: _model, context, options });
         const response = assistant(prediction);
-        return { result: async () => ({ ...response, usage: { ...response.usage,
-          input: 100, cacheRead: 40, cacheWrite: 10, output: 20, reasoning: 5, totalTokens: 170 } }) };
+        return { result: async () => {
+          if (predictionGate) await predictionGate;
+          return { ...response, usage: { ...response.usage,
+            input: 100, cacheRead: 40, cacheWrite: 10, output: 20, reasoning: 5, totalTokens: 170 } };
+        } };
       },
     };
     const resources = {
@@ -123,6 +127,32 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(errors, []); checks++;
     assert.equal(requests.length, 1, "real Pi session should attempt one prediction"); checks++;
+    if (shellDuringPrediction) {
+      const payload = JSON.stringify(requests[0].context);
+      for (const char of "!echo PRIVATE_PENDING_COMMAND") editor.handleInput(char);
+      assert.equal(requests[0].options.signal.aborted, false); checks++;
+      editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(session.sessionManager.getBranch().at(-1).message.role, "bashExecution"); checks++;
+      const entriesAfterBash = session.sessionManager.getBranch().length;
+      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+      assert.ok(notices.at(-1).includes("still being generated")); checks++;
+      assert.equal(requests[0].options.signal.aborted, false); checks++;
+      releasePrediction(); await new Promise(resolve => setImmediate(resolve));
+      assert.ok(!rendered(editor).includes("show me an example"), "shell-held result is never automatically offered"); checks++;
+      assert.equal(editor.getText(), ""); checks++;
+      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+      assert.ok(rendered(editor).includes("show me an example")); checks++;
+      assert.equal(editor.getText(), ""); checks++;
+      assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
+      assert.equal(session.sessionManager.getBranch().length, entriesAfterBash); checks++;
+      assert.equal(JSON.stringify(requests[0].context), payload); checks++;
+      assert.ok(!payload.includes("PRIVATE_PENDING_COMMAND")); checks++;
+      await session.prompt("/next-prompt status");
+      assert.ok(notices.at(-1).includes("attempts: 1; offered: 0; last outcome: recalled")); checks++;
+      assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
+      assert.deepEqual(errors, []); checks++;
+      return checks;
+    }
     assert.ok(rendered(editor).includes("show me an example"), "prediction should render after real terminal submission"); checks++;
     assert.equal(editor.getText(), ""); checks++;
     await session.prompt("/next-prompt status");
@@ -231,6 +261,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.deepEqual(errors, []); checks++;
     return checks;
   } finally {
+    releasePrediction?.();
     session?.dispose();
     globalThis.fetch = fetchBefore;
     if (agentDirBefore === undefined) delete process.env.PI_CODING_AGENT_DIR;

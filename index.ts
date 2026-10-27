@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 import { buildPayload, generate, looksRemote, selectModel, textOnly, type Failure } from "./core.ts";
-import { GhostEditor } from "./ghost-editor.ts";
+import { GhostEditor, type EditorEdit } from "./ghost-editor.ts";
 import { seedHistory } from "./prefix-history.ts";
 import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
 
@@ -20,13 +20,15 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
   const settings = options.settings ?? modelSettings();
   let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0, prefixHistory = false;
   let lastError: Failure | undefined;
-  // Runtime-only, content-free diagnostics. Attempts count local generation starts, not billed HTTP requests.
+  // Runtime-only, content-free diagnostics: attempts are local starts, not billed HTTP requests.
+  // Offered counts automatic offers, not cache/recall.
   let attempts = 0, offered = 0, lastOutcome = "not-started";
   let usageEpoch = 0, usageReports = 0, inputTokens = 0, outputTokens = 0;
   let activity: Activity | undefined;
   let pending: AbortController | undefined;
+  let recallOnly = false;
   let editor: GhostEditor | undefined;
-  // One offered candidate in RAM for the last model exchange; never a suggestion history.
+  // One candidate in RAM for the last model exchange; never a suggestion history.
   let recallCandidate: { text: string; session: string; leaf: string | null; editor: GhostEditor } | undefined;
   let ownFactory: EditorFactory | undefined;
   const localUsers = new Set<string>();
@@ -35,6 +37,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     epoch++;
     pending?.abort();
     pending = undefined;
+    recallOnly = false;
     editor?.clearGhost();
   }
   function invalidate(reason: string, keepRecall = false): void {
@@ -43,7 +46,16 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     if (!keepRecall) recallCandidate = undefined;
     cancel();
   }
-  function edited(): void { invalidate("cancelled:editor-input", true); }
+  function edited(kind: EditorEdit): void {
+    if (pending && (kind === "shell" || (kind === "recall-command" && recallOnly))) {
+      recallOnly = true;
+      activity = undefined;
+      editor?.clearGhost();
+      lastOutcome = "request-pending:recall-only";
+      return;
+    }
+    invalidate("cancelled:editor-input", true);
+  }
   function reset(): void { modelEpoch++; invalidate("cancelled:session-or-branch"); editor?.resetPrefixSearch(); localUsers.clear(); blocked = 0; }
   function fail(error: Failure): void { lastError = error; lastOutcome = `error:${error}`; }
 
@@ -77,14 +89,16 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
       entry.type === "message" && entry.message.role === "bashExecution");
   }
 
-  function notReady(ctx: ExtensionContext): string | undefined {
+  function notReady(ctx: ExtensionContext, forCache = false): string | undefined {
     if (!enabled || ctx.mode !== "tui") return "disabled-or-headless";
     if (blocked) return "blocking-ui";
     if (!ctx.isIdle()) return "busy";
     if (ctx.hasPendingMessages()) return "queued-input";
-    if (!editor?.focused) return "editor-unfocused";
-    if (editor.getText() !== "" || ctx.ui.getEditorText() !== "") return "editor-not-empty";
-    if (editor.isShowingAutocomplete()) return "autocomplete";
+    if (!forCache) {
+      if (!editor?.focused) return "editor-unfocused";
+      if (editor.getText() !== "" || ctx.ui.getEditorText() !== "") return "editor-not-empty";
+      if (editor.isShowingAutocomplete()) return "autocomplete";
+    }
     if (ctx.ui.getEditorComponent() !== ownFactory) return "editor-replaced";
     return undefined;
   }
@@ -96,8 +110,9 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     handler: async (args, ctx) => {
       const command = args.trim() || "on", commandEpoch = ++modelEpoch;
       const modelCommand = command === "model" || command.startsWith("model ");
-      // Commands cancel pending generation/visible ghosts; recall may reuse an offered candidate.
-      invalidate("cancelled:command", true);
+      // Recall/status must not cancel the shell-held request they are inspecting.
+      if (pending && recallOnly && (command === "recall" || command === "status")) editor?.clearGhost();
+      else invalidate("cancelled:command", true);
       if (modelCommand || (command === "on" && !selection)) {
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
         if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Wait for Pi to finish before changing the suggestion model.", "info"); return; }
@@ -116,7 +131,10 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
       if (command === "recall") {
         if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
         const saved = recallCandidate;
-        if (!saved) { ctx.ui.notify("No suggestion to recall for this exchange.", "info"); return; }
+        if (!saved) {
+          ctx.ui.notify(pending && recallOnly ? "Suggestion is still being generated. Try recall again shortly." : "No suggestion to recall for this exchange.", "info");
+          return;
+        }
         if (saved.session !== ctx.sessionManager.getSessionId() || !sameExchange(saved.leaf, ctx) ||
             saved.editor !== editor || ctx.ui.getEditorComponent() !== ownFactory) {
           recallCandidate = undefined;
@@ -256,18 +274,23 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
           return;
         }
         if (result.error) { fail(result.error); return; }
-        if (ctx.sessionManager.getSessionId() !== finished.session || ctx.sessionManager.getLeafId() !== leaf ||
-            instance !== editor || notReady(ctx)) { lastOutcome = "discarded:stale-or-not-ready"; return; }
+        const onlyRecall = recallOnly;
+        if (ctx.sessionManager.getSessionId() !== finished.session ||
+            (onlyRecall ? !sameExchange(leaf, ctx) : ctx.sessionManager.getLeafId() !== leaf) ||
+            !instance || instance !== editor || notReady(ctx, onlyRecall)) { lastOutcome = "discarded:stale-or-not-ready"; return; }
         lastError = undefined;
         lastOutcome = result.outcome ?? "no-result";
         if (result.text) {
-          if (editor?.setGhost(result.text)) {
+          if (onlyRecall) {
+            recallCandidate = { text: result.text, session: finished.session, leaf, editor: instance };
+            lastOutcome = "cached-for-recall";
+          } else if (editor?.setGhost(result.text)) {
             recallCandidate = { text: result.text, session: finished.session, leaf, editor };
             offered++; lastOutcome = "offered";
           } else lastOutcome = "discarded:editor-not-ready";
         }
       }).catch(() => { if (epoch === requestEpoch) fail("request-failed"); })
-        .finally(() => { if (pending === controller) pending = undefined; });
+        .finally(() => { if (pending === controller) { pending = undefined; recallOnly = false; } });
     } catch { fail("context-unavailable"); cancel(); }
   });
 
