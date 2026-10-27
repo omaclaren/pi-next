@@ -37,12 +37,12 @@ let nextId = 0;
 const entry = message => ({ type: "message", id: `entry-${++nextId}`, parentId: null, timestamp: new Date(0).toISOString(), message });
 const projected = e => ({ sourceEntry: e, messages: e.type === "message" ? [e.message] : [] });
 
-function harness({ flag = "openai/gpt-6-luna", mode = "tui", timeoutMs = 40, conflict = false,
+function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tui", timeoutMs = 40, conflict = false,
   settings = { load: () => "", save() {} } } = {}) {
   const handlers = new Map(), commands = new Map(), requests = [], notices = [];
   let factory = conflict ? () => {} : undefined, editor, entries = [], projection, session = "session-a", idle = true, queued = false;
   let selected = model, catalog, available = true, oauth = true, authSource = "stored", authReads = 0;
-  const pi = { registerFlag() {}, getFlag: () => flag ?? undefined, registerCommand: (name, value) => commands.set(name, value),
+  const pi = { registerFlag() {}, getFlag: name => name === "prefix-history" ? prefixHistory : flag ?? undefined, registerCommand: (name, value) => commands.set(name, value),
     on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); } };
   const ui = { getEditorText: () => editor?.getText() ?? "", getEditorComponent: () => factory,
     setEditorComponent: value => { factory = value; editor = value ? value(screen, theme, new KeybindingsManager()) : undefined;
@@ -498,8 +498,12 @@ for (const [response, expected, offered] of [
   ok(h.notices.at(-1).text.includes("attempts: 1; offered: 0; last outcome: error:request-failed"));
   ok(!h.notices.at(-1).text.includes("PRIVATE_PROVIDER_FIXTURE")); await h.shutdown();
 }
+const { checkHistory } = await import("./history.mjs");
+checks += await checkHistory({ harness, jiti, host, tui, model, project, sdk, modules, KeybindingsManager, screen, theme, rendered, entry, user, assistant, projected });
 const { checkSettings } = await import("./settings.mjs");
 checks += await checkSettings({ harness, jiti, host, tui, model, project, pause, KeybindingsManager });
 const { checkSession } = await import("./session.mjs");
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered });
+checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true });
+checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, historyOnly: true });
 console.log(`Passed ${checks} offline checks with real Pi ${JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version} editor/helpers and session lifecycle; provider calls mocked.`);

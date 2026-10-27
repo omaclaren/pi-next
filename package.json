@@ -15,7 +15,7 @@
     "url": "https://github.com/omaclaren/pi-next-prompt/issues"
   },
   "keywords": ["pi-package", "pi-extension", "prompt-suggestions", "ghost-text"],
-  "files": ["index.ts", "core.ts", "ghost-editor.ts", "settings.ts", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["index.ts", "core.ts", "ghost-editor.ts", "prefix-history.ts", "history-only.ts", "settings.ts", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "engines": {
     "node": ">=22.19.0"
   },

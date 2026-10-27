@@ -1,13 +1,14 @@
-import { CustomEditor, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { PrefixHistoryEditor } from "./prefix-history.ts";
 import { CURSOR_MARKER, matchesKey, renderFakeCursor, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
 /** Render-only ghost state; it never changes getText(), history or onSubmit. */
-export class GhostEditor extends CustomEditor {
+export class GhostEditor extends PrefixHistoryEditor {
   private ghost: string | undefined;
   private edited: (() => void) | undefined;
 
-  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: () => void) {
-    super(tui, theme, keys, { embedWorkingStatus: true });
+  constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, edited?: () => void, prefixHistory = false) {
+    super(tui, theme, keys, prefixHistory);
     this.edited = edited;
   }
 

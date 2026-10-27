@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Real Pi lifecycle and terminal submit handler, with synthetic context and no network/auth store. */
-export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered }) {
+export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory = false, historyOnly = false }) {
   const { Agent } = await import(pathToFileURL(join(modules, "@earendil-works/pi-agent-core/dist/index.js")).href);
   const { InteractiveMode } = await import(pathToFileURL(join(sdk, "dist/modes/interactive/interactive-mode.js")).href);
   const { loadExtensions } = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
@@ -16,8 +16,9 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   let session;
   let checks = 0;
   try {
-    const loaded = await loadExtensions([join(project, "index.ts")], cwd);
+    const loaded = await loadExtensions([join(project, historyOnly ? "history-only.ts" : "index.ts")], cwd);
     assert.deepEqual(loaded.errors, []); checks++;
+    if (prefixHistory) loaded.runtime.flagValues.set("prefix-history", true);
     const requests = [], errors = [], notices = [];
     let editor, factory, submitted, prediction = "show me an example", mainCalls = 0, pickerSearch = "luna", pickerCalls = 0;
     const ui = {
@@ -79,7 +80,24 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       resourceLoader: resources, initialActiveToolNames: [], baseToolsOverride: {},
     });
     await session.bindExtensions({ mode: "tui", uiContext: ui, onError: error => errors.push(error) });
-    assert.equal(editor, undefined, "loading without a model leaves suggestions disabled"); checks++;
+    if (historyOnly) {
+      assert.ok(editor instanceof host.CustomEditor); checks++;
+      const commands = [];
+      const terminal = { defaultEditor: editor, editor, session,
+        handleBashCommand: async command => commands.push(command), updateEditorBorderColor() {} };
+      InteractiveMode.prototype.setupEditorSubmitHandler.call(terminal);
+      editor.setText("!printf history-only"); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      editor.setText("!p"); editor.handleInput("\x1b[A");
+      assert.equal(editor.getText(), "!printf history-only"); checks++;
+      editor.handleInput("\x1b[B"); assert.equal(editor.getText(), "!p"); checks++;
+      assert.deepEqual(commands, ["printf history-only"], "only the explicit submission reaches the fixture shell handler"); checks++;
+      assert.equal(requests.length, 0); checks++; assert.equal(mainCalls, 0); checks++;
+      assert.equal(pickerCalls, 0); checks++;
+      assert.equal(existsSync(join(cwd, "agent", "next-prompt.json")), false, "history-only never creates model settings"); checks++;
+      assert.deepEqual(errors, []); checks++;
+      return checks;
+    }
+    assert.equal(prefixHistory ? editor instanceof host.CustomEditor : editor, prefixHistory ? true : undefined, "prefix history can run before selecting a model"); checks++;
     await session.prompt("/next-prompt status");
     assert.equal(pickerCalls, 0, "status does not start first-use setup"); checks++;
     const beforeSetupEntries = session.sessionManager.getBranch().length;
@@ -169,6 +187,27 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(pickerCalls, 2, "bare command reuses the existing selection without another picker"); checks++;
     assert.equal(requests.length, 4); checks++;
     assert.equal(mainCalls, 4); checks++;
+    if (prefixHistory) {
+      await session.prompt("/next-prompt off");
+      const commands = [];
+      terminal.handleBashCommand = async (command, excluded) => { commands.push({ command, excluded }); };
+      terminal.updateEditorBorderColor = () => {};
+      for (const text of ["!muxy browser open --split", "!git status", "!!printf private-history"]) {
+        editor.setText(text); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+      }
+      assert.deepEqual(commands, [{ command: "muxy browser open --split", excluded: false }, { command: "git status", excluded: false }, { command: "printf private-history", excluded: true }]); checks++;
+      editor.setText("!");
+      for (const expected of ["!!printf private-history", "!git status", "!muxy browser open --split"]) {
+        editor.handleInput("\x1b[A"); assert.equal(editor.getText(), expected); checks++;
+      }
+      for (let i = 0; i < 3; i++) editor.handleInput("\x1b[B");
+      assert.equal(editor.getText(), "!"); checks++;
+      editor.setText("!muxy"); editor.handleInput("\x1b[A");
+      assert.equal(editor.getText(), "!muxy browser open --split"); checks++;
+      assert.equal(commands.length, 3, "history recall does not execute shell commands"); checks++;
+      assert.equal(requests.length, 4, "history recall does not request predictions"); checks++;
+      assert.equal(mainCalls, 4, "history recall does not request the main model"); checks++;
+    }
     assert.deepEqual(errors, []); checks++;
     return checks;
   } finally {

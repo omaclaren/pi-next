@@ -49,6 +49,20 @@ To remove it:
 pi remove git:github.com/omaclaren/pi-next-prompt
 ```
 
+## Prefix history (optional)
+
+To try local prefix-filtered Up/Down history alongside next-prompt, start Pi with `--prefix-history`. It works even when suggestions are off or no suggestion model is selected.
+
+For history navigation **without next-prompt**, load the alternative entry point from this checkout:
+
+```bash
+pi --extension ./history-only.ts
+```
+
+Load one entry point, not both. With a nonempty single-line prefix such as `!` or `!muxy`, **Up/Down** walks matching entries, newest first. Down past the newest match restores your draft; no match leaves it alone. Editing or moving the cursor ends that search. Empty-buffer recall, multiline editing and autocomplete menus keep Pi's normal behaviour. On a wrapped draft, move to its beginning to start a prefix search.
+
+History stays in memory (up to 100 entries), seeded from ordinary messages and `!`/`!!` commands retained in the active session context. New submissions enter through Pi's normal editor history. There is no cross-session collection, new history file or model request, and recalling an entry never submits it.
+
 ## Development
 
 ```bash

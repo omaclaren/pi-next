@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
-import { buildPayload, generate, looksRemote, ordinary, selectModel, textOnly, type Failure } from "./core.ts";
+import { buildPayload, generate, looksRemote, selectModel, textOnly, type Failure } from "./core.ts";
 import { GhostEditor } from "./ghost-editor.ts";
+import { seedHistory } from "./prefix-history.ts";
 import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
 
 const FLAG = "next-prompt-model";
@@ -17,7 +18,7 @@ interface Activity {
 /** Optional timeout/settings injection keeps tests offline and out of real user configuration. */
 export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: number; settings?: ModelSettings } = {}): void {
   const settings = options.settings ?? modelSettings();
-  let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0;
+  let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0, prefixHistory = false;
   let lastError: Failure | undefined;
   // Runtime-only, content-free diagnostics. Attempts count local generation starts, not billed HTTP requests.
   let attempts = 0, offered = 0, lastOutcome = "not-started";
@@ -43,7 +44,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     cancel();
   }
   function edited(): void { invalidate("cancelled:editor-input", true); }
-  function reset(): void { modelEpoch++; invalidate("cancelled:session-or-branch"); localUsers.clear(); blocked = 0; }
+  function reset(): void { modelEpoch++; invalidate("cancelled:session-or-branch"); editor?.resetPrefixSearch(); localUsers.clear(); blocked = 0; }
   function fail(error: Failure): void { lastError = error; lastOutcome = `error:${error}`; }
 
   function install(ctx: ExtensionContext, rebuild = false): boolean {
@@ -55,14 +56,10 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     ownFactory = (tui, theme, keys) => {
       const isMain = main;
       main = false;
-      const instance = new GhostEditor(tui, theme, keys, isMain ? edited : undefined);
+      const instance = new GhostEditor(tui, theme, keys, isMain ? edited : undefined, isMain && prefixHistory);
       if (isMain) {
         editor = instance;
-        for (const item of ordinary(ctx.sessionManager.buildSessionProjection().entries)) {
-          if (item.message.role !== "user") continue;
-          const text = textOnly(item.message.content).trim();
-          if (text) instance.addToHistory(text);
-        }
+        seedHistory(instance, ctx.sessionManager.buildSessionProjection().entries, prefixHistory);
       }
       return instance;
     };
@@ -83,6 +80,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
   }
 
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
+  pi.registerFlag("prefix-history", { description: "Enable local prefix-filtered Up/Down history, independently of suggestions", type: "boolean" });
   pi.registerCommand("next-prompt", {
     description: "Start suggestions; model, on, off, status, recall",
     handler: async (args, ctx) => {
@@ -144,8 +142,10 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     reset(); editor = undefined; ownFactory = undefined; lastError = undefined;
     attempts = 0; offered = 0; lastOutcome = "not-started";
     usageReports = 0; inputTokens = 0; outputTokens = 0;
-    selection = ""; enabled = false;
+    selection = ""; enabled = false; prefixHistory = false;
     if (ctx.mode !== "tui") return;
+    prefixHistory = pi.getFlag("prefix-history") === true;
+    if (prefixHistory) install(ctx);
     try {
       const flag = pi.getFlag(FLAG);
       selection = flag !== undefined ? String(flag) : settings.load();
@@ -261,12 +261,12 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     } catch { fail("context-unavailable"); cancel(); }
   });
 
-  pi.on("ui_prompt_start", () => { blocked++; invalidate("cancelled:blocking-ui"); });
+  pi.on("ui_prompt_start", () => { blocked++; editor?.resetPrefixSearch(); invalidate("cancelled:blocking-ui"); });
   pi.on("ui_prompt_end", () => { blocked = Math.max(0, blocked - 1); });
   pi.on("session_before_switch", reset);
   pi.on("session_before_fork", reset);
   pi.on("session_before_tree", reset);
-  pi.on("session_before_compact", () => invalidate("cancelled:compaction"));
+  pi.on("session_before_compact", () => { editor?.resetPrefixSearch(); invalidate("cancelled:compaction"); });
   pi.on("session_tree", (_event, ctx) => {
     reset();
     if (ownFactory && ctx.ui.getEditorComponent() === ownFactory) install(ctx, true);
