@@ -5,7 +5,7 @@ A small [Pi](https://pi.dev/) extension that suggests your next prompt as dim te
 ## Install
 
 ```bash
-pi install git:github.com/omaclaren/pi-next
+pi install npm:pi-next
 ```
 
 Start a new Pi process, then run:
@@ -55,7 +55,7 @@ Browsing history makes no model requests and works even when suggestions are off
 ## Remove
 
 ```bash
-pi remove git:github.com/omaclaren/pi-next
+pi remove npm:pi-next
 ```
 
 ## Licence
