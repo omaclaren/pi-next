@@ -14,69 +14,49 @@ Start a new Pi process, then run:
 /next
 ```
 
-If no model is selected, this opens a searchable picker of Pi's available chat models. It saves your choice in `pi-next.json` in Pi's agent directory (normally `~/.pi/agent/`), ready for later sessions. Pi handles authentication and requests. The suggestion model is separate from your main model and thinking settings; a small, fast model usually makes sense here. Installing alone doesn't enable suggestions.
-
-Existing `next-prompt.json` settings are read if `pi-next.json` is absent. Changing the model writes the new file without removing the old one.
-
-You can override the saved choice at startup:
-
-```bash
-pi --next-model openai/gpt-6-luna
-```
+Choose a model for suggestions from the picker. Your choice is saved for later sessions, separately from your main Pi model.
 
 ## Use
 
-After Pi finishes a reply, a suggestion may appear if the editor is empty.
+After Pi finishes a reply, a suggestion may appear when the editor is empty.
 
 - **Tab / Right Arrow:** insert it for editing, without sending.
 - **Escape:** dismiss it.
 - **Enter:** behaves normally and doesn't accept the suggestion.
-- Typing clears the suggestion. Deleting back to empty doesn't bring it back automatically.
 
-```text
-/next model
-/next-recall
-/next status
-/next off
-/next on
+Typing also dismisses the suggestion. Use `/next-recall` to bring it back before starting a new conversation turn.
+
+Local `!`/`!!` commands hide the suggestion while they run. The same suggestion can reappear afterward when the editor is empty.
+
+| Command | What it does |
+| --- | --- |
+| `/next` or `/next on` | Turn suggestions on, choosing a model if needed. |
+| `/next-model` or `/next model` | Choose the suggestion model. Both accept an optional `provider/model` argument. |
+| `/next-recall` or `/next recall` | Bring back the last suggestion for the current exchange. |
+| `/next status` | Show the selected model and reported token usage. |
+| `/next off` | Turn suggestions off for this session. |
+
+To override the saved model at startup, use `pi --next-model provider/model`.
+
+Each prediction makes an extra model request using a few recent messages and the latest reply. The extension can conflict with others that replace Pi's editor.
+
+## Prefix history (optional)
+
+Start Pi with:
+
+```bash
+pi --prefix-history
 ```
 
-`model` changes the suggestion model. `/next-recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. It appears in Pi's slash-command autocomplete; `/next recall` also works. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next`; `off` disables suggestions for the current session.
+Type a prefix such as `!git`, then use **Up/Down** to browse matching prompts or shell commands from the current session. Down past the newest match restores your draft. Edit the recalled text or press Enter to submit it.
 
-The old `/next-prompt` and `/next-prompt-recall` commands still work, as does `--next-prompt-model`. If both model flags are supplied, `--next-model` takes precedence.
+Browsing history makes no model requests and works even when suggestions are off.
 
-Local `!`/`!!` commands temporarily hide an active suggestion. The same suggestion returns after the command finishes, once the editor is empty and idle. An already-running prediction can finish during that detour and appear afterward; no extra request is made. Escape, ordinary prompt editing and cancelled commands stop automatic return. Explicit recall remains available.
-
-Each prediction makes an extra model request using a few recent messages and the latest reply. It doesn't generate periodically while idle. The extension uses Pi's custom-editor slot, so it can conflict with other custom-editor extensions.
-
-To remove it:
+## Remove
 
 ```bash
 pi remove git:github.com/omaclaren/pi-next
 ```
-
-## Prefix history (optional)
-
-To try local prefix-filtered Up/Down history alongside pi-next, start Pi with `--prefix-history`. It works even when suggestions are off or no suggestion model is selected.
-
-For history navigation **without pi-next**, load the alternative entry point from this checkout:
-
-```bash
-pi --extension ./history-only.ts
-```
-
-Load one entry point, not both. With a nonempty single-line prefix such as `!` or `!muxy`, **Up/Down** walks matching entries, newest first. Down past the newest match restores your draft; no match leaves it alone. Editing or moving the cursor ends that search. Empty-buffer recall, multiline editing and autocomplete menus keep Pi's normal behaviour. On a wrapped draft, move to its beginning to start a prefix search.
-
-History stays in memory (up to 100 entries), seeded from ordinary messages and `!`/`!!` commands retained in the active session context. New submissions enter through Pi's normal editor history. There is no cross-session collection, new history file or model request, and recalling an entry never submits it.
-
-## Development
-
-```bash
-npm ci --ignore-scripts --legacy-peer-deps
-npm run check
-```
-
-Tested with Pi 1.3.0 and 1.4.0. Tests use mocked model calls.
 
 ## Licence
 

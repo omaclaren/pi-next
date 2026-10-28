@@ -50,7 +50,7 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     eq(readFileSync(legacyPath, "utf8"), legacyContents);
     const migrated = harness({ flag: null, settings: defaultStore }); migrated.models(catalog); await migrated.start();
     ok(migrated.editor, "the old saved choice enables startup without a picker or a rewrite");
-    await migrated.namedCommand("next-prompt", "on"); await migrated.command("");
+    await migrated.command("on"); await migrated.command("");
     eq(existsSync(currentPath), false); eq(readFileSync(legacyPath, "utf8"), legacyContents);
     eq(migrated.requests.length, 0); await migrated.shutdown();
     eq(modelSettings(join(folder, "explicit-absent.json")).load(), "", "explicit paths do not read unrelated legacy settings");
@@ -69,15 +69,15 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     assert.throws(() => defaultStore.load(), /Could not read pi-next settings/); checks++;
     rmSync(currentPath, { recursive: true });
 
-    // Both flag names are explicit overrides; a bad new flag must not fall back to the old one.
-    for (const [flag, legacyFlag, expected] of [
-      [null, "google/gemini-fixture", google],
-      ["openai/gpt-6-luna", "google/gemini-fixture", model],
-      ["unknown/missing", "google/gemini-fixture", undefined],
-      ["", "google/gemini-fixture", undefined],
+    // A startup override never falls back to a saved choice if invalid or explicitly empty.
+    for (const [flag, expected] of [
+      [null, anthropic],
+      ["openai/gpt-6-luna", model],
+      ["unknown/missing", undefined],
+      ["", undefined],
     ]) {
       const saved = memory("anthropic/claude-fixture");
-      const h = harness({ flag, legacyFlag, settings: saved }); h.models(catalog); await h.start();
+      const h = harness({ flag, settings: saved }); h.models(catalog); await h.start();
       await h.begin(); await h.finish();
       eq(h.requests.length, expected ? 1 : 0);
       if (expected) { eq(h.requests[0].model, expected); await h.settleResponse(0); }
@@ -115,6 +115,43 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
         await cancelled.command(command); eq(store.writes, []); eq(cancelled.editor, undefined);
         await cancelled.begin(); await cancelled.finish(); eq(cancelled.requests.length, 0); await cancelled.shutdown();
       }
+    }
+
+    // Both model command forms share the picker, explicit selection and cancellation behaviour.
+    for (const name of ["next", "next-model"]) {
+      const saved = memory(), h = harness({ flag: null, settings: saved }); h.models(catalog);
+      const choose = (args = "") => h.namedCommand(name, name === "next" ? `model ${args}` : args);
+      let pickers = 0;
+      h.ctx.ui.custom = async () => { pickers++; return "google/gemini-fixture"; };
+      await h.start(); await choose();
+      eq(pickers, 1); eq(saved.writes, ["google/gemini-fixture"]); ok(h.editor);
+      await choose(" openrouter/org/model:free ");
+      eq(pickers, 1); eq(saved.writes, ["google/gemini-fixture", "openrouter/org/model:free"]);
+      await choose("unknown/missing");
+      eq(pickers, 1); eq(saved.writes.length, 2, "an invalid explicit choice never opens a fallback picker");
+      h.ctx.ui.custom = async () => { pickers++; return undefined; };
+      await choose(); eq(pickers, 2); eq(saved.writes.length, 2, "cancelling leaves the saved choice alone");
+      eq(h.requests.length, 0); eq(h.authReads, 0);
+      eq(h.ctx.model.id, "gpt-6.1-sol"); eq(h.ctx.thinkingLevel, "xhigh");
+      await h.shutdown();
+    }
+    for (const mode of ["tui", "rpc", "print", "json"]) {
+      for (const block of mode === "tui" ? [x => x.setIdle(false), x => x.queue(true), x => x.emit("ui_prompt_start")] : [() => {}]) {
+        const saved = memory(), h = harness({ mode, flag: null, settings: saved }); h.models(catalog);
+        let pickers = 0;
+        h.ctx.ui.custom = async () => { pickers++; return "google/gemini-fixture"; };
+        await h.start(); await block(h);
+        await h.namedCommand("next-model"); await h.namedCommand("next-model", "google/gemini-fixture");
+        eq(pickers, 0); eq(saved.writes, []); eq(h.requests.length, 0); await h.shutdown();
+      }
+    }
+    {
+      const saved = memory(), h = harness({ flag: null, settings: saved }); h.models(catalog); await h.start();
+      let finish;
+      h.ctx.ui.custom = () => new Promise(resolve => { finish = resolve; });
+      const choosing = h.namedCommand("next-model"); await pause(); await h.command("off");
+      finish("google/gemini-fixture"); await choosing;
+      eq(saved.writes, []); eq(h.requests.length, 0); await h.shutdown();
     }
 
     // Every chat provider uses the same Pi registry/request path, with no credential inspection.

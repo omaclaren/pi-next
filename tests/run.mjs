@@ -37,13 +37,13 @@ let nextId = 0;
 const entry = message => ({ type: "message", id: `entry-${++nextId}`, parentId: null, timestamp: new Date(0).toISOString(), message });
 const projected = e => ({ sourceEntry: e, messages: e.type === "message" ? [e.message] : [] });
 
-function harness({ flag = "openai/gpt-6-luna", legacyFlag, prefixHistory = false, mode = "tui", timeoutMs = 40, conflict = false,
+function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tui", timeoutMs = 40, conflict = false,
   settings = { load: () => "", save() {} } } = {}) {
   const handlers = new Map(), commands = new Map(), requests = [], notices = [];
   let factory = conflict ? () => {} : undefined, editor, entries = [], projection, session = "session-a", idle = true, queued = false;
   let selected = model, catalog, available = true, oauth = true, authSource = "stored", authReads = 0;
   const pi = { registerFlag() {}, getFlag: name => name === "prefix-history" ? prefixHistory :
-    name === "next-model" ? flag ?? undefined : name === "next-prompt-model" ? legacyFlag : undefined,
+    name === "next-model" ? flag ?? undefined : undefined,
     registerCommand: (name, value) => commands.set(name, value),
     on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); } };
   const ui = { getEditorText: () => editor?.getText() ?? "", getEditorComponent: () => factory,
@@ -237,10 +237,9 @@ for (const change of [h => h.available(false), h => h.selected(undefined)]) {
   const result = await loader.loadExtensions([join(project, "index.ts")], project);
   eq(result.errors, []); eq(result.extensions.length, 1);
   const extension = result.extensions[0];
-  ok(extension.commands.has("next")); ok(extension.commands.has("next-recall")); ok(extension.flags.has("next-model"));
-  eq(extension.commands.get("next").handler, extension.commands.get("next-prompt").handler);
-  eq(extension.commands.get("next-recall").handler, extension.commands.get("next-prompt-recall").handler);
-  ok(extension.flags.has("next-prompt-model")); eq(registerNext, registerNextPrompt);
+  eq([...extension.commands.keys()].sort(), ["next", "next-model", "next-recall"]);
+  eq([...extension.flags.keys()].sort(), ["next-model", "prefix-history"]);
+  eq(registerNext, registerNextPrompt);
   ok(extension.handlers.has("agent_settled")); ok(!extension.tools.size);
 }
 {
@@ -297,9 +296,9 @@ async function withOffer(options) {
   await h.settleResponse(0, assistant("RECALL_CANDIDATE")); return h;
 }
 // The autocomplete-friendly alias shares recall's cache, readiness checks and no-request behaviour.
-for (const prefixHistory of [false, true]) for (const alias of ["next-recall", "next-prompt-recall"]) {
+for (const prefixHistory of [false, true]) {
   const h = await withOffer({ prefixHistory }); h.editor.handleInput("\x1b");
-  await h.namedCommand(alias);
+  await h.namedCommand("next-recall");
   ok(rendered(h.editor).includes("RECALL_CANDIDATE")); eq(h.editor.getText(), ""); eq(h.requests.length, 1);
   h.editor.setText("keep my draft"); await h.namedCommand("next-recall");
   eq(h.editor.getText(), "keep my draft"); ok(h.notices.at(-1).text.includes("idle, empty"));

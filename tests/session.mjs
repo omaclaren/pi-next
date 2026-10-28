@@ -106,14 +106,15 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     const autocomplete = new CombinedAutocompleteProvider(session.extensionRunner.getRegisteredCommands().map(command => ({
       name: command.invocationName, description: command.description,
     })), cwd);
-    let recalledCommand;
-    for (const [prefix, expected] of [["/next-r", "/next-recall"], ["/next-prompt-r", "/next-prompt-recall"]]) {
+    let recalledCommand, modelCommand;
+    for (const [prefix, expected] of [["/next-r", "/next-recall"], ["/next-m", "/next-model"]]) {
       const suggestions = await autocomplete.getSuggestions([prefix], 0, prefix.length, { signal: new AbortController().signal });
       const item = suggestions?.items.find(item => item.value === expected.slice(1));
-      assert.ok(item, "both recall names appear in Pi's native slash-command autocomplete"); checks++;
+      assert.ok(item, "recall and model commands appear in Pi's native slash-command autocomplete"); checks++;
       const completed = autocomplete.applyCompletion([prefix], 0, prefix.length, item, suggestions.prefix).lines[0];
       assert.equal(completed.trim(), expected); checks++;
       if (expected === "/next-recall") recalledCommand = completed;
+      else modelCommand = completed;
     }
     assert.equal(prefixHistory ? editor instanceof host.CustomEditor : editor, prefixHistory ? true : undefined, "prefix history can run before selecting a model"); checks++;
     await session.prompt("/next status");
@@ -126,11 +127,6 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(requests.length, 0, "first-use setup makes no prediction request"); checks++;
     assert.equal(mainCalls, 0); checks++;
     assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries, "first-use setup adds no conversation entry"); checks++;
-    for (const command of ["/next-prompt off", "/next-prompt on", "/next-prompt status"]) await session.prompt(command);
-    assert.ok(notices.at(-1).startsWith("Pi-next: on; model: openai/gpt-6-luna;")); checks++;
-    assert.equal(pickerCalls, 1, "old commands reuse the same selection without a picker"); checks++;
-    assert.equal(requests.length, 0); checks++; assert.equal(mainCalls, 0); checks++;
-    assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries); checks++;
     // The pi-next observer must pass through to this fixture executor unchanged.
     const shellHandlers = loaded.extensions[0].handlers.get("user_bash") ?? [];
     shellHandlers.push(async () => {
@@ -229,13 +225,6 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(session.sessionManager.getBranch().length, branchLength, "recall appends no conversation entry"); checks++;
     assert.equal(requests.length, 1, "recall makes no prediction request"); checks++;
     assert.equal(mainCalls, 1, "recall makes no main-agent request"); checks++;
-    for (const alias of ["/next-prompt-recall", "/next-prompt recall"]) {
-      editor.handleInput("\x1b"); editor.setText(alias); editor.handleInput("\r"); await submitted;
-      assert.ok(rendered(editor).includes("show me an example")); checks++;
-      assert.equal(editor.getText(), ""); checks++;
-      assert.equal(session.sessionManager.getBranch().length, branchLength); checks++;
-      assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
-    }
     editor.handleInput("\r");
     assert.equal(editor.getText(), "", "Enter does not accept a recalled ghost"); checks++;
     assert.equal(mainCalls, 1); checks++;
@@ -269,7 +258,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.deepEqual(errors, []); checks++;
     const beforePickerEntries = session.sessionManager.getBranch().length;
     pickerSearch = "gemini";
-    editor.setText("/next model"); editor.handleInput("\r"); await submitted;
+    editor.setText(prefixHistory ? "/next model" : modelCommand); editor.handleInput("\r"); await submitted;
     assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "pi-next.json"), "utf8")), { model: "google/gemini-fixture" }); checks++;
     assert.equal(requests.length, 3); checks++;
     assert.equal(mainCalls, 3); checks++;

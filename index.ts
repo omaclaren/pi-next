@@ -6,7 +6,6 @@ import { seedHistory } from "./prefix-history.ts";
 import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
 
 const FLAG = "next-model";
-const LEGACY_FLAG = "next-prompt-model";
 interface ShellPause {
   session: string;
   leaf: string | null;
@@ -158,7 +157,6 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
   });
 
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
-  pi.registerFlag(LEGACY_FLAG, { description: "Alias for --next-model", type: "string" });
   pi.registerFlag("prefix-history", { description: "Enable local prefix-filtered Up/Down history, independently of suggestions", type: "boolean" });
   const nextCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Start suggestions; model, on, off, status, recall",
@@ -228,9 +226,11 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     handler: (_args, ctx) => nextCommand.handler("recall", ctx),
   };
   pi.registerCommand("next", nextCommand);
+  pi.registerCommand("next-model", {
+    description: "Choose the suggestion model",
+    handler: (args, ctx) => nextCommand.handler(`model ${args}`, ctx),
+  });
   pi.registerCommand("next-recall", recallCommand);
-  pi.registerCommand("next-prompt", nextCommand);
-  pi.registerCommand("next-prompt-recall", recallCommand);
 
   pi.on("session_start", (_event, ctx) => {
     usageEpoch++; // Late usage from the previous runtime must not enter the new totals.
@@ -242,7 +242,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     prefixHistory = pi.getFlag("prefix-history") === true;
     if (prefixHistory) install(ctx);
     try {
-      const flag = pi.getFlag(FLAG) ?? pi.getFlag(LEGACY_FLAG);
+      const flag = pi.getFlag(FLAG);
       selection = flag !== undefined ? String(flag) : settings.load();
     } catch { fail("settings-error"); return; }
     if (!selection) return;
