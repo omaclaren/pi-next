@@ -5,7 +5,8 @@ import { GhostEditor, type EditorEdit } from "./ghost-editor.ts";
 import { seedHistory } from "./prefix-history.ts";
 import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
 
-const FLAG = "next-prompt-model";
+const FLAG = "next-model";
+const LEGACY_FLAG = "next-prompt-model";
 interface ShellPause {
   session: string;
   leaf: string | null;
@@ -23,7 +24,7 @@ interface Activity {
 }
 
 /** Optional timeout/settings injection keeps tests offline and out of real user configuration. */
-export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: number; settings?: ModelSettings } = {}): void {
+export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; settings?: ModelSettings } = {}): void {
   const settings = options.settings ?? modelSettings();
   let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0, prefixHistory = false;
   let lastError: Failure | undefined;
@@ -157,8 +158,9 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
   });
 
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
+  pi.registerFlag(LEGACY_FLAG, { description: "Alias for --next-model", type: "string" });
   pi.registerFlag("prefix-history", { description: "Enable local prefix-filtered Up/Down history, independently of suggestions", type: "boolean" });
-  const nextPromptCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+  const nextCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Start suggestions; model, on, off, status, recall",
     handler: async (args, ctx) => {
       const command = args.trim() || "on", commandEpoch = ++modelEpoch;
@@ -167,7 +169,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
       if (((pending && shellHeld) || shellPause) && (command === "recall" || command === "status")) editor?.clearGhost();
       else invalidate("cancelled:command", true);
       if (modelCommand || (command === "on" && !selection)) {
-        if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
+        if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
         if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) { ctx.ui.notify("Wait for Pi to finish before changing the suggestion model.", "info"); return; }
         const requested = (modelCommand ? command.slice(5).trim() : "") || await pickModel(ctx, selection);
         if (commandEpoch !== modelEpoch || !requested) return;
@@ -176,13 +178,13 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
         if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Could not select model: ${choice.error}.`, "warning"); return; }
         if (!install(ctx)) { ctx.ui.notify("Another extension is using the custom editor.", "warning"); return; }
         try { settings.save(requested); }
-        catch { fail("settings-error"); ctx.ui.notify("Could not save the next-prompt model.", "error"); return; }
+        catch { fail("settings-error"); ctx.ui.notify("Could not save the pi-next model.", "error"); return; }
         selection = requested; enabled = true; lastError = undefined; recallCandidate = undefined; lastOutcome = "model-selected";
-        ctx.ui.notify(`Next-prompt model: ${selection}.`, "info");
+        ctx.ui.notify(`Pi-next model: ${selection}.`, "info");
         return;
       }
       if (command === "recall") {
-        if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
+        if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
         const saved = recallCandidate;
         if (!saved) {
           ctx.ui.notify(pending && shellHeld ? "Suggestion is still being generated. Try recall again shortly." : "No suggestion to recall for this exchange.", "info");
@@ -197,7 +199,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
           ctx.ui.notify("Wait for the shell command to finish before recalling a suggestion.", "info"); return;
         }
         if (notReady(ctx) || !editor?.setGhost(saved.text)) {
-          ctx.ui.notify("Recall needs next-prompt on and an idle, empty, focused editor with no completion menu.", "info"); return;
+          ctx.ui.notify("Recall needs pi-next on and an idle, empty, focused editor with no completion menu.", "info"); return;
         }
         shellPause = undefined; autoEligible = true;
         lastOutcome = "recalled";
@@ -208,24 +210,27 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
         recallCandidate = undefined;
         enabled = false;
         const choice = selectModel(ctx, selection);
-        if (ctx.mode !== "tui") { ctx.ui.notify("Next-prompt is terminal-only.", "info"); return; }
-        if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Next-prompt stays off: ${choice.error}. Use /next-prompt model to choose one.`, "warning"); return; }
+        if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
+        if ("error" in choice) { fail(choice.error); ctx.ui.notify(`Pi-next stays off: ${choice.error}. Use /next model to choose one.`, "warning"); return; }
         enabled = install(ctx);
         if (enabled) lastError = undefined;
       } else if (command !== "status") {
-        ctx.ui.notify("Usage: /next-prompt [model|on|off|status|recall]", "info"); return;
+        ctx.ui.notify("Usage: /next [model|on|off|status|recall]", "info"); return;
       }
       const chosen = selectModel(ctx, selection);
       const label = "model" in chosen ? `${chosen.model.provider}/${chosen.model.id}` : "not selected";
       const tokens = usageReports ? `${inputTokens} in / ${outputTokens} out` : "not reported";
-      ctx.ui.notify(`Next-prompt: ${enabled ? "on" : "off"}; model: ${label}; last error: ${lastError ?? "none"}; attempts: ${attempts}; offered: ${offered}; last outcome: ${lastOutcome}. Reported tokens: ${tokens} (${usageReports}/${attempts} reports).`, "info");
+      ctx.ui.notify(`Pi-next: ${enabled ? "on" : "off"}; model: ${label}; last error: ${lastError ?? "none"}; attempts: ${attempts}; offered: ${offered}; last outcome: ${lastOutcome}. Reported tokens: ${tokens} (${usageReports}/${attempts} reports).`, "info");
     },
   };
-  pi.registerCommand("next-prompt", nextPromptCommand);
-  pi.registerCommand("next-prompt-recall", {
-    description: "Recall the last next-prompt suggestion",
-    handler: (_args, ctx) => nextPromptCommand.handler("recall", ctx),
-  });
+  const recallCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
+    description: "Recall the last pi-next suggestion",
+    handler: (_args, ctx) => nextCommand.handler("recall", ctx),
+  };
+  pi.registerCommand("next", nextCommand);
+  pi.registerCommand("next-recall", recallCommand);
+  pi.registerCommand("next-prompt", nextCommand);
+  pi.registerCommand("next-prompt-recall", recallCommand);
 
   pi.on("session_start", (_event, ctx) => {
     usageEpoch++; // Late usage from the previous runtime must not enter the new totals.
@@ -237,7 +242,7 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
     prefixHistory = pi.getFlag("prefix-history") === true;
     if (prefixHistory) install(ctx);
     try {
-      const flag = pi.getFlag(FLAG);
+      const flag = pi.getFlag(FLAG) ?? pi.getFlag(LEGACY_FLAG);
       selection = flag !== undefined ? String(flag) : settings.load();
     } catch { fail("settings-error"); return; }
     if (!selection) return;
@@ -378,4 +383,5 @@ export function registerNextPrompt(pi: ExtensionAPI, options: { timeoutMs?: numb
   });
 }
 
-export default function nextPrompt(pi: ExtensionAPI): void { registerNextPrompt(pi); }
+export { registerNext as registerNextPrompt };
+export default function next(pi: ExtensionAPI): void { registerNext(pi); }

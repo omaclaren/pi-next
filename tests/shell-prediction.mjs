@@ -25,11 +25,17 @@ export async function checkShellPrediction({ harness, assistant, usageResponse, 
           const result = bashEntry({ ...fields, ...resultFields });
           if (deferBash) results.push(result); else h.entries().push(result);
         })();
-      } else if (text === "/next-prompt-recall") command = h.namedCommand("next-prompt-recall");
-      else if (text.startsWith("/next-prompt ")) command = h.command(text.slice(13));
+      } else if (["/next-recall", "/next-prompt-recall"].includes(text)) command = h.namedCommand(text.slice(1));
+      else {
+        const match = /^\/(next|next-prompt) (.*)$/.exec(text);
+        if (match) command = h.namedCommand(match[1], match[2]);
+      }
     };
     return { submitted, wait: () => shell, finish: () => h.entries().push(...results.splice(0)),
-      issue: async (args, alias = false) => { type(h.editor, alias ? "/next-prompt-recall" : `/next-prompt ${args}`); h.editor.handleInput("\r"); await command; } };
+      issue: async (args, alias = false, legacy = false) => {
+        const base = legacy ? "next-prompt" : "next";
+        type(h.editor, alias ? `/${base}-recall` : `/${base} ${args}`); h.editor.handleInput("\r"); await command;
+      } };
   }
   for (const prefixHistory of [false, true]) for (const timing of ["typing", "running", "finished"]) {
     const h = await pending({ prefixHistory }), t = terminal(h, timing === "running");
@@ -57,16 +63,16 @@ export async function checkShellPrediction({ harness, assistant, usageResponse, 
     eq(t.submitted.filter(text => text.startsWith("!")).length, 1, "only explicit Enter executes the fixture shell command");
     eq(h.requests.length, 1); await h.shutdown();
   }
-  // Checking status/recall early, including typing their prefixes, must not cancel or restart the request.
-  {
+  // Both command families preserve a held request, including while their prefixes are typed.
+  for (const legacy of [false, true]) {
     const h = await pending(), t = terminal(h);
     type(h.editor, "!echo 1"); h.editor.handleInput("\r"); await t.wait();
-    await t.issue("status"); eq(h.requests[0].options.signal.aborted, false);
+    await t.issue("status", false, legacy); eq(h.requests[0].options.signal.aborted, false);
     ok(h.notices.at(-1).text.includes("request-pending:shell"));
-    await t.issue("recall", true); ok(h.notices.at(-1).text.includes("still being generated"));
+    await t.issue("recall", true, legacy); ok(h.notices.at(-1).text.includes("still being generated"));
     eq(h.requests.length, 1); eq(h.requests[0].options.signal.aborted, false);
     await h.settleResponse(0, response()); ok(rendered(h.editor).includes(candidate));
-    await t.issue("recall"); ok(rendered(h.editor).includes(candidate)); eq(h.requests.length, 1);
+    await t.issue("recall", false, legacy); ok(rendered(h.editor).includes(candidate)); eq(h.requests.length, 1);
     await h.shutdown();
   }
   // Already visible suggestions return too, but a cancelled command does not resurrect one.
@@ -188,7 +194,7 @@ export async function checkShellPrediction({ harness, assistant, usageResponse, 
     h => h.editor.handleInput("\x1b"),
     h => h.editor.handleInput("\x03"),
     h => h.editor.setText("ordinary draft"),
-    h => { h.editor.setText("/next-prompt recall"); h.editor.handleInput("\x1b"); },
+    h => { h.editor.setText("/next recall"); h.editor.handleInput("\x1b"); },
     h => h.command("off"),
     h => h.command("on"),
     h => h.command("model openai/gpt-6-luna"),

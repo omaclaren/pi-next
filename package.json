@@ -1,5 +1,5 @@
 {
-  "name": "pi-next-prompt",
+  "name": "pi-next",
   "version": "0.1.0",
   "description": "Next-prompt suggestions for Pi",
   "private": true,
@@ -8,11 +8,11 @@
   "author": "Oliver Maclaren",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/omaclaren/pi-next-prompt.git"
+    "url": "git+https://github.com/omaclaren/pi-next.git"
   },
-  "homepage": "https://github.com/omaclaren/pi-next-prompt#readme",
+  "homepage": "https://github.com/omaclaren/pi-next#readme",
   "bugs": {
-    "url": "https://github.com/omaclaren/pi-next-prompt/issues"
+    "url": "https://github.com/omaclaren/pi-next/issues"
   },
   "keywords": ["pi-package", "pi-extension", "prompt-suggestions", "ghost-text"],
   "files": ["index.ts", "core.ts", "ghost-editor.ts", "prefix-history.ts", "history-only.ts", "settings.ts", "LICENSE", "THIRD_PARTY_NOTICES.md"],

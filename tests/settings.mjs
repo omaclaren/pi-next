@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export async function checkSettings({ harness, jiti, host, tui, model, project, pause, KeybindingsManager }) {
   const { modelSettings, pickModel } = await jiti.import(join(project, "settings.ts"));
   const core = await jiti.import(join(project, "core.ts"));
-  const folder = mkdtempSync(join(tmpdir(), "pi-next-prompt-settings-"));
+  const folder = mkdtempSync(join(tmpdir(), "pi-next-settings-"));
   const beforeAgentDir = process.env.PI_CODING_AGENT_DIR;
   let checks = 0;
   const eq = (a, b, label) => { assert.deepEqual(a, b, label); checks++; };
@@ -25,7 +25,7 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     process.env.PI_CODING_AGENT_DIR = folder;
     host.initTheme("dark", false);
     // Files contain just the chosen reference, and writes replace the file atomically.
-    const path = join(folder, "settings", "next-prompt.json"), store = modelSettings(path);
+    const path = join(folder, "settings", "pi-next.json"), store = modelSettings(path);
     eq(store.load(), ""); store.save("openrouter/org/model:free");
     eq(store.load(), "openrouter/org/model:free");
     eq(JSON.parse(readFileSync(path, "utf8")), { model: "openrouter/org/model:free" });
@@ -39,6 +39,51 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
     ok(!readdirSync(folder).some(name => name.endsWith(".tmp")), "failed save cleans its temporary file");
     for (const ref of ["openrouter/org/model:free", "llama-cpp/model.gguf", "custom/Model with spaces"]) ok(core.isModelRef(ref));
     for (const ref of ["", "model-only", "/model", "provider/", "provider/model\n", "provider/\x1b[31mmodel", "provider/\u202Emodel"]) eq(core.isModelRef(ref), false);
+
+    // Default settings read the old file only if the new file is absent, without startup writes.
+    const currentPath = join(folder, "pi-next.json"), legacyPath = join(folder, "next-prompt.json");
+    const defaultStore = modelSettings();
+    eq(defaultStore.load(), "");
+    const legacyContents = JSON.stringify({ model: "openai/gpt-6-luna" }) + "\n";
+    writeFileSync(legacyPath, legacyContents);
+    eq(defaultStore.load(), "openai/gpt-6-luna"); eq(existsSync(currentPath), false);
+    eq(readFileSync(legacyPath, "utf8"), legacyContents);
+    const migrated = harness({ flag: null, settings: defaultStore }); migrated.models(catalog); await migrated.start();
+    ok(migrated.editor, "the old saved choice enables startup without a picker or a rewrite");
+    await migrated.namedCommand("next-prompt", "on"); await migrated.command("");
+    eq(existsSync(currentPath), false); eq(readFileSync(legacyPath, "utf8"), legacyContents);
+    eq(migrated.requests.length, 0); await migrated.shutdown();
+    eq(modelSettings(join(folder, "explicit-absent.json")).load(), "", "explicit paths do not read unrelated legacy settings");
+    defaultStore.save("google/gemini-fixture");
+    eq(defaultStore.load(), "google/gemini-fixture"); eq(statSync(currentPath).mode & 0o777, 0o600);
+    eq(JSON.parse(readFileSync(currentPath, "utf8")), { model: "google/gemini-fixture" });
+    eq(readFileSync(legacyPath, "utf8"), legacyContents, "saving leaves the old choice alone");
+    writeFileSync(legacyPath, "{invalid"); eq(defaultStore.load(), "google/gemini-fixture", "the new file takes precedence over a corrupt old file");
+    writeFileSync(legacyPath, legacyContents); writeFileSync(currentPath, "{invalid");
+    assert.throws(() => defaultStore.load(), /Could not read pi-next settings/); checks++;
+    rmSync(currentPath); eq(defaultStore.load(), "openai/gpt-6-luna");
+    writeFileSync(legacyPath, "{invalid");
+    assert.throws(() => defaultStore.load(), /Could not read pi-next settings/); checks++;
+    rmSync(legacyPath); eq(defaultStore.load(), "");
+    mkdirSync(currentPath);
+    assert.throws(() => defaultStore.load(), /Could not read pi-next settings/); checks++;
+    rmSync(currentPath, { recursive: true });
+
+    // Both flag names are explicit overrides; a bad new flag must not fall back to the old one.
+    for (const [flag, legacyFlag, expected] of [
+      [null, "google/gemini-fixture", google],
+      ["openai/gpt-6-luna", "google/gemini-fixture", model],
+      ["unknown/missing", "google/gemini-fixture", undefined],
+      ["", "google/gemini-fixture", undefined],
+    ]) {
+      const saved = memory("anthropic/claude-fixture");
+      const h = harness({ flag, legacyFlag, settings: saved }); h.models(catalog); await h.start();
+      await h.begin(); await h.finish();
+      eq(h.requests.length, expected ? 1 : 0);
+      if (expected) { eq(h.requests[0].model, expected); await h.settleResponse(0); }
+      eq(saved.writes, []); eq(h.ctx.model.id, "gpt-6.1-sol"); eq(h.ctx.thinkingLevel, "xhigh");
+      await h.shutdown();
+    }
 
     // Bare command and explicit on share first-use setup, then reuse the chosen model.
     for (const command of ["", "on"]) {
@@ -60,7 +105,7 @@ export async function checkSettings({ harness, jiti, host, tui, model, project, 
       eq(h.requests.length, 0, "first-use setup makes no prediction request");
       await h.command("off"); await h.command(command); await h.command(command);
       eq(pickers, 1, "an existing selection is reused without a picker"); eq(saved.writes.length, 1);
-      await h.command("status"); ok(h.notices.at(-1).text.startsWith("Next-prompt: on; model: google/gemini-fixture;"));
+      await h.command("status"); ok(h.notices.at(-1).text.startsWith("Pi-next: on; model: google/gemini-fixture;"));
       eq(h.ctx.model.id, "gpt-6.1-sol"); eq(h.ctx.thinkingLevel, "xhigh");
       await h.begin(); await h.finish(); eq(h.requests.length, 1); eq(h.requests[0].model.provider, "google"); await h.shutdown();
       for (const emptyCatalog of [false, true]) {

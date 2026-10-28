@@ -8,25 +8,29 @@ import { isModelRef } from "./core.ts";
 export interface ModelSettings { load(): string; save(model: string): void }
 
 /** Only the explicitly chosen model is stored, never credentials or conversation text. */
-export function modelSettings(path = join(getAgentDir(), "next-prompt.json")): ModelSettings {
+export function modelSettings(path?: string): ModelSettings {
+  const target = path ?? join(getAgentDir(), "pi-next.json");
+  // Read the old choice only when the new file is absent. Never rewrite or remove it on startup.
+  const legacy = path === undefined ? join(getAgentDir(), "next-prompt.json") : undefined;
+  function read(file: string): string | undefined {
+    try {
+      const data: unknown = JSON.parse(readFileSync(file, "utf8"));
+      if (!data || typeof data !== "object" || !("model" in data) || !isModelRef(data.model)) throw new Error("Invalid model setting");
+      return data.model;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error("Could not read pi-next settings");
+    }
+  }
   return {
-    load() {
-      try {
-        const data: unknown = JSON.parse(readFileSync(path, "utf8"));
-        if (!data || typeof data !== "object" || !("model" in data) || !isModelRef(data.model)) throw new Error("Invalid model setting");
-        return data.model;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-        throw new Error("Could not read next-prompt settings");
-      }
-    },
+    load() { return read(target) ?? (legacy ? read(legacy) : undefined) ?? ""; },
     save(model) {
       if (!isModelRef(model)) throw new Error("Invalid model setting");
-      mkdirSync(dirname(path), { recursive: true });
-      const temporary = `${path}.${randomUUID()}.tmp`;
+      mkdirSync(dirname(target), { recursive: true });
+      const temporary = `${target}.${randomUUID()}.tmp`;
       try {
         writeFileSync(temporary, JSON.stringify({ model }, null, 2) + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
-        renameSync(temporary, path);
+        renameSync(temporary, target);
       } finally { rmSync(temporary, { force: true }); }
     },
   };
@@ -52,7 +56,7 @@ export function pickModel(ctx: ExtensionContext, current: string): Promise<strin
     let list = makeList();
     list.setSelectedIndex(Math.max(0, items.findIndex(item => item.value === current)));
     const container = new Container();
-    container.addChild(new Text(theme.fg("accent", "Next-prompt model"), 0, 0));
+    container.addChild(new Text(theme.fg("accent", "Pi-next model"), 0, 0));
     container.addChild(search);
     container.addChild(list);
     return {

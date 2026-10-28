@@ -1,25 +1,27 @@
-# pi-next-prompt
+# pi-next
 
 A small [Pi](https://pi.dev/) extension that suggests your next prompt as dim text in the editor. I made it mainly for my own use.
 
 ## Install
 
 ```bash
-pi install git:github.com/omaclaren/pi-next-prompt
+pi install git:github.com/omaclaren/pi-next
 ```
 
 Start a new Pi process, then run:
 
 ```text
-/next-prompt
+/next
 ```
 
-If no model is selected, this opens a searchable picker of Pi's available chat models. It saves your choice in `next-prompt.json` in Pi's agent directory (normally `~/.pi/agent/`), ready for later sessions. Pi handles authentication and requests. The suggestion model is separate from your main model and thinking settings; a small, fast model usually makes sense here. Installing alone doesn't enable suggestions.
+If no model is selected, this opens a searchable picker of Pi's available chat models. It saves your choice in `pi-next.json` in Pi's agent directory (normally `~/.pi/agent/`), ready for later sessions. Pi handles authentication and requests. The suggestion model is separate from your main model and thinking settings; a small, fast model usually makes sense here. Installing alone doesn't enable suggestions.
+
+Existing `next-prompt.json` settings are read if `pi-next.json` is absent. Changing the model writes the new file without removing the old one.
 
 You can override the saved choice at startup:
 
 ```bash
-pi --next-prompt-model openai/gpt-6-luna
+pi --next-model openai/gpt-6-luna
 ```
 
 ## Use
@@ -32,14 +34,16 @@ After Pi finishes a reply, a suggestion may appear if the editor is empty.
 - Typing clears the suggestion. Deleting back to empty doesn't bring it back automatically.
 
 ```text
-/next-prompt model
-/next-prompt-recall
-/next-prompt status
-/next-prompt off
-/next-prompt on
+/next model
+/next-recall
+/next status
+/next off
+/next on
 ```
 
-`model` changes the suggestion model. `/next-prompt-recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. It appears in Pi's slash-command autocomplete; `/next-prompt recall` also works. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next-prompt`; `off` disables suggestions for the current session.
+`model` changes the suggestion model. `/next-recall` brings back the last suggestion for the same exchange without another model call, even after local `!`/`!!` commands. It appears in Pi's slash-command autocomplete; `/next recall` also works. A new conversation turn or context change still expires it. `status` shows attempts and reported token usage for the current session. `on` does the same as bare `/next`; `off` disables suggestions for the current session.
+
+The old `/next-prompt` and `/next-prompt-recall` commands still work, as does `--next-prompt-model`. If both model flags are supplied, `--next-model` takes precedence.
 
 Local `!`/`!!` commands temporarily hide an active suggestion. The same suggestion returns after the command finishes, once the editor is empty and idle. An already-running prediction can finish during that detour and appear afterward; no extra request is made. Escape, ordinary prompt editing and cancelled commands stop automatic return. Explicit recall remains available.
 
@@ -48,14 +52,14 @@ Each prediction makes an extra model request using a few recent messages and the
 To remove it:
 
 ```bash
-pi remove git:github.com/omaclaren/pi-next-prompt
+pi remove git:github.com/omaclaren/pi-next
 ```
 
 ## Prefix history (optional)
 
-To try local prefix-filtered Up/Down history alongside next-prompt, start Pi with `--prefix-history`. It works even when suggestions are off or no suggestion model is selected.
+To try local prefix-filtered Up/Down history alongside pi-next, start Pi with `--prefix-history`. It works even when suggestions are off or no suggestion model is selected.
 
-For history navigation **without next-prompt**, load the alternative entry point from this checkout:
+For history navigation **without pi-next**, load the alternative entry point from this checkout:
 
 ```bash
 pi --extension ./history-only.ts

@@ -9,7 +9,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   const { Agent } = await import(pathToFileURL(join(modules, "@earendil-works/pi-agent-core/dist/index.js")).href);
   const { InteractiveMode } = await import(pathToFileURL(join(sdk, "dist/modes/interactive/interactive-mode.js")).href);
   const { loadExtensions } = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
-  const cwd = mkdtempSync(join(tmpdir(), "pi-next-prompt-session-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-next-session-"));
   const fetchBefore = globalThis.fetch, agentDirBefore = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(cwd, "agent");
   globalThis.fetch = () => { throw new Error("Network is forbidden in this offline test"); };
@@ -98,7 +98,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       assert.deepEqual(commands, ["printf history-only"], "only the explicit submission reaches the fixture shell handler"); checks++;
       assert.equal(requests.length, 0); checks++; assert.equal(mainCalls, 0); checks++;
       assert.equal(pickerCalls, 0); checks++;
-      assert.equal(existsSync(join(cwd, "agent", "next-prompt.json")), false, "history-only never creates model settings"); checks++;
+      assert.equal(existsSync(join(cwd, "agent", "pi-next.json")), false, "history-only never creates model settings"); checks++;
       assert.deepEqual(errors, []); checks++;
       return checks;
     }
@@ -106,24 +106,32 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     const autocomplete = new CombinedAutocompleteProvider(session.extensionRunner.getRegisteredCommands().map(command => ({
       name: command.invocationName, description: command.description,
     })), cwd);
-    const prefix = "/next-prompt-r";
-    const suggestions = await autocomplete.getSuggestions([prefix], 0, prefix.length, { signal: new AbortController().signal });
-    const item = suggestions?.items.find(item => item.value.includes("next-prompt-recall"));
-    assert.ok(item, "registered alias appears in Pi's native slash-command autocomplete"); checks++;
-    const recalledCommand = autocomplete.applyCompletion([prefix], 0, prefix.length, item, suggestions.prefix).lines[0];
-    assert.equal(recalledCommand.trim(), "/next-prompt-recall"); checks++;
+    let recalledCommand;
+    for (const [prefix, expected] of [["/next-r", "/next-recall"], ["/next-prompt-r", "/next-prompt-recall"]]) {
+      const suggestions = await autocomplete.getSuggestions([prefix], 0, prefix.length, { signal: new AbortController().signal });
+      const item = suggestions?.items.find(item => item.value === expected.slice(1));
+      assert.ok(item, "both recall names appear in Pi's native slash-command autocomplete"); checks++;
+      const completed = autocomplete.applyCompletion([prefix], 0, prefix.length, item, suggestions.prefix).lines[0];
+      assert.equal(completed.trim(), expected); checks++;
+      if (expected === "/next-recall") recalledCommand = completed;
+    }
     assert.equal(prefixHistory ? editor instanceof host.CustomEditor : editor, prefixHistory ? true : undefined, "prefix history can run before selecting a model"); checks++;
-    await session.prompt("/next-prompt status");
+    await session.prompt("/next status");
     assert.equal(pickerCalls, 0, "status does not start first-use setup"); checks++;
     const beforeSetupEntries = session.sessionManager.getBranch().length;
-    await session.prompt("/next-prompt");
+    await session.prompt("/next");
     assert.ok(editor); checks++;
     assert.equal(pickerCalls, 1); checks++;
-    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "next-prompt.json"), "utf8")), { model: "openai/gpt-6-luna" }); checks++;
+    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "pi-next.json"), "utf8")), { model: "openai/gpt-6-luna" }); checks++;
     assert.equal(requests.length, 0, "first-use setup makes no prediction request"); checks++;
     assert.equal(mainCalls, 0); checks++;
     assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries, "first-use setup adds no conversation entry"); checks++;
-    // The next-prompt observer must pass through to this fixture executor unchanged.
+    for (const command of ["/next-prompt off", "/next-prompt on", "/next-prompt status"]) await session.prompt(command);
+    assert.ok(notices.at(-1).startsWith("Pi-next: on; model: openai/gpt-6-luna;")); checks++;
+    assert.equal(pickerCalls, 1, "old commands reuse the same selection without a picker"); checks++;
+    assert.equal(requests.length, 0); checks++; assert.equal(mainCalls, 0); checks++;
+    assert.equal(session.sessionManager.getBranch().length, beforeSetupEntries); checks++;
+    // The pi-next observer must pass through to this fixture executor unchanged.
     const shellHandlers = loaded.extensions[0].handlers.get("user_bash") ?? [];
     shellHandlers.push(async () => {
       if (shellGate) await shellGate;
@@ -158,12 +166,12 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
         releasePrediction(); await new Promise(resolve => setImmediate(resolve));
         assert.ok(!rendered(editor).includes("show me an example"), "an empty editor is not proof that bash finished"); checks++;
         assert.equal(session.sessionManager.getLeafId(), leafBeforeResult); checks++;
-        await session.prompt("/next-prompt recall");
+        await session.prompt("/next recall");
         assert.ok(notices.at(-1).includes("Wait for the shell command to finish")); checks++;
         assert.ok(!rendered(editor).includes("show me an example")); checks++;
         releaseShell(); await shellWork;
       } else if (shellDuringPrediction !== "typing") {
-        editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+        editor.setText("/next recall"); editor.handleInput("\r"); await submitted;
         assert.ok(notices.at(-1).includes("still being generated")); checks++;
         assert.equal(requests[0].options.signal.aborted, false); checks++;
         releasePrediction(); await new Promise(resolve => setImmediate(resolve));
@@ -176,14 +184,14 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
       assert.equal(mainCalls, 1, "Enter never submits the automatically restored ghost"); checks++;
       assert.equal(requests.length, 1); checks++;
-      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+      editor.setText("/next recall"); editor.handleInput("\r"); await submitted;
       assert.ok(rendered(editor).includes("show me an example")); checks++;
       assert.equal(editor.getText(), ""); checks++;
       assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
       assert.equal(session.sessionManager.getBranch().length, entriesAfterBash); checks++;
       assert.equal(JSON.stringify(requests[0].context), payload); checks++;
       assert.ok(!payload.includes("PRIVATE_PENDING_COMMAND")); checks++;
-      await session.prompt("/next-prompt status");
+      await session.prompt("/next status");
       assert.ok(notices.at(-1).includes("attempts: 1; offered: 1; last outcome: recalled")); checks++;
       assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
       assert.deepEqual(errors, []); checks++;
@@ -191,23 +199,23 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     }
     assert.ok(rendered(editor).includes("show me an example"), "prediction should render after real terminal submission"); checks++;
     assert.equal(editor.getText(), ""); checks++;
-    await session.prompt("/next-prompt status");
+    await session.prompt("/next status");
     assert.ok(notices.at(-1).includes("attempts: 1; offered: 1; last outcome: offered")); checks++;
     assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)"), "meter excludes main-agent usage and counts cache input once"); checks++;
     // Reproduce the live regression: shell submission advances the real session leaf, not the model exchange.
     const replyLeaf = session.sessionManager.getLeafId();
     for (const command of ["!echo 1", "!!echo 2"]) {
-      await session.prompt("/next-prompt recall");
+      await session.prompt("/next recall");
       editor.setText(command); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
       assert.notEqual(session.sessionManager.getLeafId(), replyLeaf); checks++;
       assert.ok(rendered(editor).includes("show me an example"), "completed shell command restores the same ghost"); checks++;
       const afterBashEntries = session.sessionManager.getBranch().length;
-      editor.setText("/next-prompt recall"); editor.handleInput("\r"); await submitted;
+      editor.setText("/next recall"); editor.handleInput("\r"); await submitted;
       assert.ok(rendered(editor).includes("show me an example"), "explicit recall survives a real bash leaf change"); checks++;
       assert.equal(editor.getText(), ""); checks++;
       assert.equal(session.sessionManager.getBranch().length, afterBashEntries); checks++;
       assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
-      await session.prompt("/next-prompt status");
+      await session.prompt("/next status");
       assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)")); checks++;
     }
     // Submit the native-autocompleted alias through the real terminal path, without new input/run activity.
@@ -221,16 +229,23 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     assert.equal(session.sessionManager.getBranch().length, branchLength, "recall appends no conversation entry"); checks++;
     assert.equal(requests.length, 1, "recall makes no prediction request"); checks++;
     assert.equal(mainCalls, 1, "recall makes no main-agent request"); checks++;
+    for (const alias of ["/next-prompt-recall", "/next-prompt recall"]) {
+      editor.handleInput("\x1b"); editor.setText(alias); editor.handleInput("\r"); await submitted;
+      assert.ok(rendered(editor).includes("show me an example")); checks++;
+      assert.equal(editor.getText(), ""); checks++;
+      assert.equal(session.sessionManager.getBranch().length, branchLength); checks++;
+      assert.equal(requests.length, 1); checks++; assert.equal(mainCalls, 1); checks++;
+    }
     editor.handleInput("\r");
     assert.equal(editor.getText(), "", "Enter does not accept a recalled ghost"); checks++;
     assert.equal(mainCalls, 1); checks++;
-    editor.setText("/next-prompt recall"); editor.handleInput("\r");
+    editor.setText("/next recall"); editor.handleInput("\r");
     await submitted; await new Promise(resolve => setImmediate(resolve));
     assert.equal(requests.length, 1); checks++;
     editor.handleInput("\t");
     assert.equal(editor.getText(), "show me an example", "recall is still insertion-only"); checks++;
     assert.equal(mainCalls, 1); checks++;
-    await session.prompt("/next-prompt status");
+    await session.prompt("/next status");
     assert.ok(notices.at(-1).includes("Reported tokens: 150 in / 20 out (1/1 reports)"), "recall leaves token totals unchanged"); checks++;
     for (const [output, expected] of [["NO_SUGGESTION", "abstained"], ["show me another example\n", "rejected:control-character"]]) {
       prediction = output;
@@ -238,24 +253,24 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       editor.handleInput("\r");
       await submitted;
       await new Promise(resolve => setImmediate(resolve));
-      await session.prompt("/next-prompt status");
+      await session.prompt("/next status");
       assert.ok(notices.at(-1).includes(`last outcome: ${expected}`)); checks++;
       const count = requests.length, calls = mainCalls;
-      editor.setText("/next-prompt recall"); editor.handleInput("\r");
+      editor.setText("/next recall"); editor.handleInput("\r");
       await submitted; await new Promise(resolve => setImmediate(resolve));
       assert.ok(!rendered(editor).includes("show me an example"), "old exchange cannot be recalled after abstention/rejection"); checks++;
       assert.equal(requests.length, count); checks++;
       assert.equal(mainCalls, calls); checks++;
     }
     assert.equal(requests.length, 3); checks++;
-    await session.prompt("/next-prompt status");
+    await session.prompt("/next status");
     assert.ok(notices.at(-1).includes("attempts: 3; offered: 1")); checks++;
     assert.ok(notices.at(-1).includes("Reported tokens: 450 in / 60 out (3/3 reports)"), "abstention/rejection still contribute reported usage"); checks++;
     assert.deepEqual(errors, []); checks++;
     const beforePickerEntries = session.sessionManager.getBranch().length;
     pickerSearch = "gemini";
-    editor.setText("/next-prompt model"); editor.handleInput("\r"); await submitted;
-    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "next-prompt.json"), "utf8")), { model: "google/gemini-fixture" }); checks++;
+    editor.setText("/next model"); editor.handleInput("\r"); await submitted;
+    assert.deepEqual(JSON.parse(readFileSync(join(cwd, "agent", "pi-next.json"), "utf8")), { model: "google/gemini-fixture" }); checks++;
     assert.equal(requests.length, 3); checks++;
     assert.equal(mainCalls, 3); checks++;
     assert.equal(session.sessionManager.getBranch().length, beforePickerEntries, "model picker adds no conversation entry"); checks++;
@@ -266,16 +281,16 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(requests.length, 4); checks++;
     assert.equal(requests.at(-1).model, google); checks++;
-    await session.prompt("/next-prompt status");
+    await session.prompt("/next status");
     assert.ok(notices.at(-1).includes("Reported tokens: 600 in / 80 out (4/4 reports)"), "changing models retains the session's prediction usage"); checks++;
-    await session.prompt("/next-prompt off");
-    editor.setText("/next-prompt"); editor.handleInput("\r"); await submitted;
-    assert.ok(notices.at(-1).startsWith("Next-prompt: on; model: google/gemini-fixture;")); checks++;
+    await session.prompt("/next off");
+    editor.setText("/next"); editor.handleInput("\r"); await submitted;
+    assert.ok(notices.at(-1).startsWith("Pi-next: on; model: google/gemini-fixture;")); checks++;
     assert.equal(pickerCalls, 2, "bare command reuses the existing selection without another picker"); checks++;
     assert.equal(requests.length, 4); checks++;
     assert.equal(mainCalls, 4); checks++;
     if (prefixHistory) {
-      await session.prompt("/next-prompt off");
+      await session.prompt("/next off");
       const commands = [];
       terminal.handleBashCommand = async (command, excluded) => { commands.push({ command, excluded }); };
       terminal.updateEditorBorderColor = () => {};

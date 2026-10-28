@@ -14,7 +14,7 @@ const { createJiti } = createRequire(join(sdk, "package.json"))("jiti");
 const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false, tryNative: false, virtualModules: {
   "@earendil-works/pi-coding-agent": host, "@earendil-works/pi-ai": ai, "@earendil-works/pi-tui": tui,
 } });
-const { registerNextPrompt } = await jiti.import(join(project, "index.ts"));
+const { registerNext, registerNextPrompt } = await jiti.import(join(project, "index.ts"));
 const { GhostEditor } = await jiti.import(join(project, "ghost-editor.ts"));
 const core = await jiti.import(join(project, "core.ts"));
 const loader = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
@@ -37,12 +37,14 @@ let nextId = 0;
 const entry = message => ({ type: "message", id: `entry-${++nextId}`, parentId: null, timestamp: new Date(0).toISOString(), message });
 const projected = e => ({ sourceEntry: e, messages: e.type === "message" ? [e.message] : [] });
 
-function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tui", timeoutMs = 40, conflict = false,
+function harness({ flag = "openai/gpt-6-luna", legacyFlag, prefixHistory = false, mode = "tui", timeoutMs = 40, conflict = false,
   settings = { load: () => "", save() {} } } = {}) {
   const handlers = new Map(), commands = new Map(), requests = [], notices = [];
   let factory = conflict ? () => {} : undefined, editor, entries = [], projection, session = "session-a", idle = true, queued = false;
   let selected = model, catalog, available = true, oauth = true, authSource = "stored", authReads = 0;
-  const pi = { registerFlag() {}, getFlag: name => name === "prefix-history" ? prefixHistory : flag ?? undefined, registerCommand: (name, value) => commands.set(name, value),
+  const pi = { registerFlag() {}, getFlag: name => name === "prefix-history" ? prefixHistory :
+    name === "next-model" ? flag ?? undefined : name === "next-prompt-model" ? legacyFlag : undefined,
+    registerCommand: (name, value) => commands.set(name, value),
     on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); } };
   const ui = { getEditorText: () => editor?.getText() ?? "", getEditorComponent: () => factory,
     setEditorComponent: value => { factory = value; editor = value ? value(screen, theme, new KeybindingsManager()) : undefined;
@@ -56,7 +58,7 @@ function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tu
     model: { ...model, id: "gpt-6.1-sol" }, thinkingLevel: "xhigh",
     sessionManager: { getSessionId: () => session, getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries,
       buildSessionProjection: () => ({ entries: projection ?? entries.map(projected) }) } };
-  registerNextPrompt(pi, { timeoutMs, settings });
+  registerNext(pi, { timeoutMs, settings });
   const emit = async (name, event = {}) => { for (const handler of handlers.get(name) ?? []) await handler({ type: name, ...event }, ctx); };
   const start = () => emit("session_start", { reason: "startup" });
   const begin = async ({ text = "show me the relevant function", source = "interactive", streamingBehavior, messageType = "user", images } = {}) => {
@@ -75,7 +77,7 @@ function harness({ flag = "openai/gpt-6-luna", prefixHistory = false, mode = "tu
   };
   return { ctx, requests, notices, emit, start, begin, finish, get editor() { return editor; }, get factory() { return factory; },
     entries: () => entries, replaceEntries: x => { entries = x; }, project: x => { projection = x; },
-    command: text => commands.get("next-prompt").handler(text, ctx),
+    command: text => commands.get("next").handler(text, ctx),
     namedCommand: (name, args = "") => commands.get(name).handler(args, ctx), queue: x => { queued = x; }, setIdle: x => { idle = x; },
     session: x => { session = x; }, oauth: x => { oauth = x; }, authSource: x => { authSource = x; }, available: x => { available = x; },
     selected: x => { selected = x; }, models: x => { catalog = x; }, get authReads() { return authReads; }, setFactory: x => { factory = x; },
@@ -235,7 +237,10 @@ for (const change of [h => h.available(false), h => h.selected(undefined)]) {
   const result = await loader.loadExtensions([join(project, "index.ts")], project);
   eq(result.errors, []); eq(result.extensions.length, 1);
   const extension = result.extensions[0];
-  ok(extension.commands.has("next-prompt")); ok(extension.commands.has("next-prompt-recall")); ok(extension.flags.has("next-prompt-model"));
+  ok(extension.commands.has("next")); ok(extension.commands.has("next-recall")); ok(extension.flags.has("next-model"));
+  eq(extension.commands.get("next").handler, extension.commands.get("next-prompt").handler);
+  eq(extension.commands.get("next-recall").handler, extension.commands.get("next-prompt-recall").handler);
+  ok(extension.flags.has("next-prompt-model")); eq(registerNext, registerNextPrompt);
   ok(extension.handlers.has("agent_settled")); ok(!extension.tools.size);
 }
 {
@@ -292,20 +297,20 @@ async function withOffer(options) {
   await h.settleResponse(0, assistant("RECALL_CANDIDATE")); return h;
 }
 // The autocomplete-friendly alias shares recall's cache, readiness checks and no-request behaviour.
-for (const prefixHistory of [false, true]) {
+for (const prefixHistory of [false, true]) for (const alias of ["next-recall", "next-prompt-recall"]) {
   const h = await withOffer({ prefixHistory }); h.editor.handleInput("\x1b");
-  await h.namedCommand("next-prompt-recall");
+  await h.namedCommand(alias);
   ok(rendered(h.editor).includes("RECALL_CANDIDATE")); eq(h.editor.getText(), ""); eq(h.requests.length, 1);
-  h.editor.setText("keep my draft"); await h.namedCommand("next-prompt-recall");
+  h.editor.setText("keep my draft"); await h.namedCommand("next-recall");
   eq(h.editor.getText(), "keep my draft"); ok(h.notices.at(-1).text.includes("idle, empty"));
-  h.editor.setText(""); h.queue(true); await h.namedCommand("next-prompt-recall");
+  h.editor.setText(""); h.queue(true); await h.namedCommand("next-recall");
   ok(!rendered(h.editor).includes("RECALL_CANDIDATE")); eq(h.requests.length, 1);
-  h.queue(false); await h.namedCommand("next-prompt-recall"); ok(rendered(h.editor).includes("RECALL_CANDIDATE"));
+  h.queue(false); await h.namedCommand("next-recall"); ok(rendered(h.editor).includes("RECALL_CANDIDATE"));
   await h.command("status"); ok(h.notices.at(-1).text.includes("attempts: 1; offered: 1; last outcome: recalled"));
   await h.shutdown();
 }
 for (const mode of ["tui", "rpc", "print"]) {
-  const h = harness({ mode }); await h.start(); await h.namedCommand("next-prompt-recall");
+  const h = harness({ mode }); await h.start(); await h.namedCommand("next-recall");
   eq(h.requests.length, 0); ok(h.notices.at(-1).text.includes(mode === "tui" ? "No suggestion" : "terminal-only"));
   await h.shutdown();
 }

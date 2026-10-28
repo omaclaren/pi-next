@@ -128,11 +128,11 @@ export async function checkHistory({ harness, jiti, host, tui, project, sdk, Key
     e.setText("!"); e.handleInput(up); eq(e.getText(), "!!printf hidden"); e.handleInput(up); eq(e.getText(), "!muxy browser open --split");
     e.setText("PRIVATE_"); e.handleInput(up); eq(e.getText(), "PRIVATE_", "no tools, summaries, custom, removed or assistant text in history");
     const legacy = new PrefixHistoryEditor(screen, theme, new KeybindingsManager()); legacy.focused = true; seedHistory(legacy, entries, false);
-    legacy.setText("!"); legacy.handleInput(up); eq(legacy.getText(), "!", "normal next-prompt seeding remains prompt-only");
+    legacy.setText("!"); legacy.handleInput(up); eq(legacy.getText(), "!", "normal pi-next seeding remains prompt-only");
     for (const flag of ["", null, "openai/invalid"]) {
       const h = harness({ prefixHistory: true, flag }); h.replaceEntries(entries.flatMap(item => item.sourceEntry.type === "message" ? [item.sourceEntry] : []));
       h.project(entries); await h.start(); ok(h.editor); h.editor.setText("!muxy"); h.editor.handleInput(up); eq(h.editor.getText(), "!muxy browser open --split");
-      await h.command("status"); eq(h.requests.length, 0); ok(h.notices.at(-1).text.includes("Next-prompt: off")); await h.shutdown();
+      await h.command("status"); eq(h.requests.length, 0); ok(h.notices.at(-1).text.includes("Pi-next: off")); await h.shutdown();
     }
     const h = harness({ prefixHistory: true }); h.project(entries); await h.start(); const factory = h.factory;
     await h.command("off"); h.editor.setText("!muxy"); h.editor.handleInput(up); eq(h.editor.getText(), "!muxy browser open --split"); eq(h.factory, factory);

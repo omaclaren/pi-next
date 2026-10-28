@@ -10,7 +10,7 @@ export default function historyOnly(pi: ExtensionAPI): void {
     if (ctx.mode !== "tui") return;
     const current = ctx.ui.getEditorComponent();
     if (current !== undefined && current !== ownFactory) {
-      ctx.ui.notify("Prefix history needs the custom-editor slot. With next-prompt, use --prefix-history instead of loading history-only.ts.", "warning");
+      ctx.ui.notify("Prefix history needs the custom-editor slot. With pi-next, use --prefix-history instead of loading history-only.ts.", "warning");
       return;
     }
     let main = true;

@@ -10,7 +10,7 @@ data.compilerOptions.paths = Object.fromEntries(["pi-coding-agent", "pi-ai", "pi
 data.compilerOptions.typeRoots = [join(modules, "@types"), join(project, "node_modules/@types")];
 delete data.include;
 data.files = readdirSync(project).filter(name => name.endsWith(".ts")).map(name => join(project, name));
-const scratch = mkdtempSync(join(tmpdir(), "next-prompt-typecheck-"));
+const scratch = mkdtempSync(join(tmpdir(), "pi-next-typecheck-"));
 try {
  const path = join(scratch, "tsconfig.json");
  writeFileSync(path, JSON.stringify(data));
