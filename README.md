@@ -26,15 +26,18 @@ After Pi finishes a reply, a suggestion may appear when the editor is empty.
 
 Typing also dismisses the suggestion. Use `/next-recall` to bring it back before starting a new conversation turn.
 
+Use `/next suggest` for a fresh suggestion, even when automatic suggestions are off. It can use the latest exchange immediately after resuming a conversation. If the model has nothing useful to suggest, Pi tells you.
+
 Local `!`/`!!` commands hide the suggestion while they run. The same suggestion can reappear afterward when the editor is empty.
 
 | Command | What it does |
 | --- | --- |
-| `/next` or `/next on` | Turn suggestions on, choosing a model if needed. |
+| `/next` or `/next on` | Turn automatic suggestions on, choosing a model if needed. |
+| `/next suggest` | Ask for a new suggestion. |
 | `/next-model` or `/next model` | Choose the suggestion model. Both accept an optional `provider/model` argument. |
 | `/next-recall` or `/next recall` | Bring back the last suggestion for the current exchange. |
 | `/next status` | Show the selected model and reported token usage. |
-| `/next off` | Turn suggestions off for this session. |
+| `/next off` | Turn automatic suggestions off for this session. |
 
 To override the saved model at startup, use `pi --next-model provider/model`.
 

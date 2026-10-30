@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
-import { buildPayload, generate, looksRemote, selectModel, textOnly, type Failure } from "./core.ts";
+import { buildPayload, buildResumedPayload, generate, looksRemote, selectModel, textOnly, type Failure } from "./core.ts";
 import { GhostEditor, type EditorEdit } from "./ghost-editor.ts";
 import { seedHistory } from "./prefix-history.ts";
 import { modelSettings, pickModel, type ModelSettings } from "./settings.ts";
@@ -13,10 +13,17 @@ interface ShellPause {
   command?: string;
   excluded?: boolean;
 }
+interface Exchange {
+  session: string;
+  user: string;
+  leaf: string | null;
+  users?: ReadonlySet<string>; // Explicitly requested history, never added to localUsers.
+}
 interface Activity {
   session: string;
   beforeIds: Set<string>;
   prompt?: string;
+  automatic: boolean;
   started: boolean;
   loopStarted: boolean;
   completed: boolean;
@@ -28,16 +35,18 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
   let enabled = false, selection = "", epoch = 0, blocked = 0, modelEpoch = 0, prefixHistory = false;
   let lastError: Failure | undefined;
   // Runtime-only, content-free diagnostics: attempts are local starts, not billed HTTP requests.
-  // Offered counts distinct automatic candidates, not repeated restores or explicit recall.
+  // Offered counts distinct generated candidates, not repeated restores or explicit recall.
   let attempts = 0, offered = 0, lastOutcome = "not-started";
   let usageEpoch = 0, usageReports = 0, inputTokens = 0, outputTokens = 0;
   let activity: Activity | undefined;
+  let exchange: Exchange | undefined;
+  let resumePoint: Pick<Exchange, "session" | "leaf"> | undefined;
   let pending: AbortController | undefined;
-  let shellHeld = false, autoEligible = false;
+  let pendingManual = false, shellHeld = false, autoEligible = false;
   let shellPause: ShellPause | undefined;
   let editor: GhostEditor | undefined;
   // One candidate in RAM for the last model exchange; never a suggestion history.
-  let recallCandidate: { text: string; session: string; leaf: string | null; editor: GhostEditor; offered: boolean } | undefined;
+  let recallCandidate: { text: string; session: string; leaf: string | null; editor: GhostEditor; offered: boolean; manual: boolean } | undefined;
   let ownFactory: EditorFactory | undefined;
   const localUsers = new Set<string>();
 
@@ -45,12 +54,13 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     epoch++;
     pending?.abort();
     pending = undefined;
-    shellHeld = false; autoEligible = false; shellPause = undefined;
+    pendingManual = false; shellHeld = false; autoEligible = false; shellPause = undefined;
     editor?.clearGhost();
   }
   function invalidate(reason: string, keepRecall = false): void {
     if (activity || pending) lastOutcome = reason;
-    activity = undefined;
+    // Dismissal stops automatic display, not attribution of the user's running exchange.
+    if (activity) activity.automatic = false;
     if (!keepRecall) recallCandidate = undefined;
     cancel();
   }
@@ -63,10 +73,11 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
       if (pending) lastOutcome = "request-pending:shell";
       return;
     }
-    if (kind === "recall-command" && ((pending && shellHeld) || shellPause)) return;
+    if (kind === "suggest-command") return;
+    if (kind === "recall-command" && ((pending && (shellHeld || pendingManual)) || shellPause)) return;
     invalidate("cancelled:editor-input", true);
   }
-  function reset(): void { modelEpoch++; invalidate("cancelled:session-or-branch"); editor?.resetPrefixSearch(); localUsers.clear(); blocked = 0; }
+  function reset(): void { modelEpoch++; exchange = undefined; resumePoint = undefined; invalidate("cancelled:session-or-branch"); activity = undefined; editor?.resetPrefixSearch(); localUsers.clear(); blocked = 0; }
   function fail(error: Failure): void {
     lastError = error; lastOutcome = `error:${error}`;
     autoEligible = false; shellPause = undefined;
@@ -103,8 +114,8 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
       entry.type === "message" && entry.message.role === "bashExecution");
   }
 
-  function notReady(ctx: ExtensionContext, forCache = false): string | undefined {
-    if (!enabled || ctx.mode !== "tui") return "disabled-or-headless";
+  function notReady(ctx: ExtensionContext, forCache = false, manual = false): string | undefined {
+    if ((!enabled && !manual) || ctx.mode !== "tui") return "disabled-or-headless";
     if (blocked) return "blocking-ui";
     if (!ctx.isIdle()) return "busy";
     if (ctx.hasPendingMessages()) return "queued-input";
@@ -139,7 +150,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
       const result = completedShell(ctx, paused);
       if (!result) return; // A submitted command, not merely an emptied draft, must have finished.
       if (result.cancelled) { shellPause = undefined; autoEligible = false; return; }
-      if (notReady(ctx)) return;
+      if (notReady(ctx, false, saved.manual)) return;
       shellPause = undefined; autoEligible = true;
       if (!saved.offered) { saved.offered = true; offered++; }
       lastOutcome = "restored-after-shell";
@@ -156,15 +167,116 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     } catch { shellPause = undefined; autoEligible = false; }
   });
 
+  /** Both triggers share the request, metering, cancellation and display path. */
+  function startRequest(ctx: ExtensionContext, current: Exchange, payload: string, manual: boolean): void {
+    cancel();
+    recallCandidate = undefined;
+    const leaf = ctx.sessionManager.getLeafId(), instance = editor, requestEpoch = ++epoch;
+    const controller = new AbortController();
+    pending = controller; pendingManual = manual;
+    attempts++; lastError = undefined; lastOutcome = "request-pending";
+    const meterEpoch = usageEpoch;
+    const requestFailed = (error: Failure) => {
+      fail(error);
+      if (pendingManual) ctx.ui.notify(error === "timeout" ? "Suggestion request timed out." : `Could not generate a suggestion (${error}).`, "warning");
+    };
+    void generate(ctx, selection, payload, controller, options.timeoutMs, usage => {
+      // Usage belongs to the session runtime, even if its ghost was cancelled or stale.
+      if (usageEpoch !== meterEpoch || !Number.isSafeInteger(inputTokens + usage.input) ||
+          !Number.isSafeInteger(outputTokens + usage.output)) return;
+      inputTokens += usage.input; outputTokens += usage.output; usageReports++;
+    }).then(result => {
+      if (epoch !== requestEpoch || controller.signal.aborted) {
+        if (epoch === requestEpoch && result.error === "timeout") requestFailed("timeout");
+        return;
+      }
+      if (result.error) { requestFailed(result.error); return; }
+      const held = shellHeld, explicit = pendingManual;
+      if (ctx.sessionManager.getSessionId() !== current.session ||
+          (held ? !sameExchange(leaf, ctx) : ctx.sessionManager.getLeafId() !== leaf) ||
+          !instance || instance !== editor || notReady(ctx, held, explicit)) {
+        lastOutcome = "discarded:stale-or-not-ready";
+        shellPause = undefined; autoEligible = false; return;
+      }
+      lastError = undefined; lastOutcome = result.outcome ?? "no-result";
+      if (result.text) {
+        if (held) {
+          recallCandidate = { text: result.text, session: current.session, leaf, editor: instance, offered: false, manual: explicit };
+          lastOutcome = "cached-for-recall";
+          instance.refreshGhost();
+        } else if (editor?.setGhost(result.text)) {
+          recallCandidate = { text: result.text, session: current.session, leaf, editor, offered: true, manual: explicit };
+          autoEligible = true; offered++; lastOutcome = "offered";
+        } else lastOutcome = "discarded:editor-not-ready";
+      } else {
+        shellPause = undefined; autoEligible = false;
+        if (explicit) ctx.ui.notify("No useful suggestion for this exchange.", "info");
+      }
+    }).catch(() => { if (epoch === requestEpoch) requestFailed("request-failed"); })
+      .finally(() => { if (pending === controller) { pending = undefined; pendingManual = false; shellHeld = false; } });
+  }
+
+  function suggest(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
+    if (!ctx.isIdle() || ctx.hasPendingMessages() || blocked) {
+      ctx.ui.notify("Wait for Pi to finish before requesting a suggestion.", "info"); return;
+    }
+    const chosen = selectModel(ctx, selection);
+    if ("error" in chosen) {
+      fail(chosen.error); ctx.ui.notify(`Could not select suggestion model: ${chosen.error}. Use /next model to choose one.`, "warning"); return;
+    }
+    try {
+      let current = exchange;
+      const point = current ?? resumePoint;
+      if (!point || point.session !== ctx.sessionManager.getSessionId() || !sameExchange(point.leaf, ctx)) {
+        exchange = undefined; resumePoint = undefined; invalidate("cancelled:stale-exchange");
+        ctx.ui.notify("No current local exchange to suggest from. Send a normal prompt first.", "info"); return;
+      }
+      if (shellPause?.command !== undefined && !completedShell(ctx, shellPause)) {
+        ctx.ui.notify("Wait for the shell command to finish before requesting a suggestion.", "info"); return;
+      }
+      if (ctx.ui.getEditorText() !== "") {
+        ctx.ui.notify("Suggest needs an idle, empty, focused editor with no completion menu.", "info"); return;
+      }
+      if (!install(ctx)) { ctx.ui.notify("Another extension is using the custom editor.", "warning"); return; }
+      if (notReady(ctx, false, true)) {
+        ctx.ui.notify("Suggest needs an idle, empty, focused editor with no completion menu.", "info"); return;
+      }
+      if (pending) {
+        pendingManual = true; // Ask the existing request for feedback, not another prediction.
+        ctx.ui.notify("Suggestion is already being generated.", "info"); return;
+      }
+      // Shell-only detours do not change the exchange or enter the prediction context.
+      const entries = ctx.sessionManager.buildSessionProjection().entries.filter(e =>
+        !(e.sourceEntry.type === "message" && e.sourceEntry.message.role === "bashExecution"));
+      let payload: string | undefined;
+      if (current) payload = buildPayload(entries, current.user, current.users ?? localUsers);
+      else {
+        const resumed = buildResumedPayload(entries, ctx.sessionManager.getBranch());
+        if (resumed) {
+          current = { ...point, user: resumed.user, users: resumed.users };
+          exchange = current; resumePoint = undefined;
+          payload = resumed.payload;
+        }
+      }
+      if (!current || !payload) { ctx.ui.notify("No useful suggestion for this exchange.", "info"); return; }
+      startRequest(ctx, current, payload, true);
+    } catch {
+      invalidate("cancelled:context-unavailable"); fail("context-unavailable");
+      ctx.ui.notify("Could not read the current exchange.", "warning");
+    }
+  }
+
   pi.registerFlag(FLAG, { description: "Suggestion model: provider/model (overrides saved choice at startup)", type: "string" });
   pi.registerFlag("prefix-history", { description: "Enable local prefix-filtered Up/Down history, independently of suggestions", type: "boolean" });
   const nextCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
-    description: "Start suggestions; model, on, off, status, recall",
+    description: "Start suggestions; suggest, model, on, off, status, recall",
     handler: async (args, ctx) => {
       const command = args.trim() || "on", commandEpoch = ++modelEpoch;
       const modelCommand = command === "model" || command.startsWith("model ");
-      // Recall/status must not cancel the shell-held request they are inspecting.
-      if (((pending && shellHeld) || shellPause) && (command === "recall" || command === "status")) editor?.clearGhost();
+      if (command === "suggest") { suggest(ctx); return; }
+      // Inspecting a shell-held or explicitly requested prediction must not cancel it.
+      if (((pending && (shellHeld || pendingManual)) || shellPause) && (command === "recall" || command === "status")) editor?.clearGhost();
       else invalidate("cancelled:command", true);
       if (modelCommand || (command === "on" && !selection)) {
         if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
@@ -185,7 +297,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
         if (ctx.mode !== "tui") { ctx.ui.notify("Pi-next is terminal-only.", "info"); return; }
         const saved = recallCandidate;
         if (!saved) {
-          ctx.ui.notify(pending && shellHeld ? "Suggestion is still being generated. Try recall again shortly." : "No suggestion to recall for this exchange.", "info");
+          ctx.ui.notify(pending && (shellHeld || pendingManual) ? "Suggestion is still being generated. Try recall again shortly." : "No suggestion to recall for this exchange.", "info");
           return;
         }
         if (saved.session !== ctx.sessionManager.getSessionId() || !sameExchange(saved.leaf, ctx) ||
@@ -196,8 +308,9 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
         if (shellPause?.command !== undefined && !completedShell(ctx, shellPause)) {
           ctx.ui.notify("Wait for the shell command to finish before recalling a suggestion.", "info"); return;
         }
-        if (notReady(ctx) || !editor?.setGhost(saved.text)) {
-          ctx.ui.notify("Recall needs pi-next on and an idle, empty, focused editor with no completion menu.", "info"); return;
+        if (notReady(ctx, false, saved.manual) || !editor?.setGhost(saved.text)) {
+          ctx.ui.notify(saved.manual ? "Recall needs an idle, empty, focused editor with no completion menu." :
+            "Recall needs pi-next on and an idle, empty, focused editor with no completion menu.", "info"); return;
         }
         shellPause = undefined; autoEligible = true;
         lastOutcome = "recalled";
@@ -213,7 +326,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
         enabled = install(ctx);
         if (enabled) lastError = undefined;
       } else if (command !== "status") {
-        ctx.ui.notify("Usage: /next [model|on|off|status|recall]", "info"); return;
+        ctx.ui.notify("Usage: /next [suggest|model|on|off|status|recall]", "info"); return;
       }
       const chosen = selectModel(ctx, selection);
       const label = "model" in chosen ? `${chosen.model.provider}/${chosen.model.id}` : "not selected";
@@ -239,6 +352,9 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     usageReports = 0; inputTokens = 0; outputTokens = 0;
     selection = ""; enabled = false; prefixHistory = false;
     if (ctx.mode !== "tui") return;
+    // Metadata only until /next suggest explicitly asks to use the retained exchange.
+    const leaf = ctx.sessionManager.getLeafId();
+    if (leaf !== null) resumePoint = { session: ctx.sessionManager.getSessionId(), leaf };
     prefixHistory = pi.getFlag("prefix-history") === true;
     if (prefixHistory) install(ctx);
     try {
@@ -253,10 +369,10 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
   });
 
   pi.on("input", (event, ctx) => {
-    recallCandidate = undefined;
+    exchange = undefined; resumePoint = undefined; recallCandidate = undefined;
     activity = undefined; cancel();
     let skip: string | undefined;
-    if (!enabled || ctx.mode !== "tui") skip = "disabled-or-headless";
+    if (ctx.mode !== "tui") skip = "disabled-or-headless";
     else if (event.source !== "interactive" || looksRemote(event.text)) skip = "non-local-input";
     else if (event.streamingBehavior || !ctx.isIdle() || ctx.hasPendingMessages()) skip = "busy-or-queued-input";
     else if (blocked) skip = "blocking-ui";
@@ -265,11 +381,11 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     lastOutcome = "input-eligible";
     activity = { session: ctx.sessionManager.getSessionId(),
       beforeIds: new Set(ctx.sessionManager.getBranch().map(e => e.id)),
-      started: false, loopStarted: false, completed: false };
+      automatic: true, started: false, loopStarted: false, completed: false };
   });
 
   pi.on("before_agent_start", (event, ctx) => {
-    recallCandidate = undefined;
+    exchange = undefined; resumePoint = undefined; recallCandidate = undefined;
     cancel();
     if (event.messageType !== "user" || !activity || activity.started || activity.session !== ctx.sessionManager.getSessionId() || looksRemote(event.prompt)) {
       if (activity) lastOutcome = "skipped:ambiguous-start";
@@ -277,17 +393,17 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     }
     activity.prompt = event.prompt;
     activity.started = true;
-    lastOutcome = "run-started";
+    if (activity.automatic) lastOutcome = "run-started";
   });
   pi.on("agent_start", () => {
-    recallCandidate = undefined;
+    exchange = undefined; resumePoint = undefined; recallCandidate = undefined;
     cancel();
     if (!activity?.started || activity.loopStarted) {
       if (activity) lastOutcome = "skipped:multiple-or-unattributed-loops";
       activity = undefined; return;
     }
     activity.loopStarted = true;
-    lastOutcome = "loop-started";
+    if (activity.automatic) lastOutcome = "loop-started";
   });
   pi.on("agent_before_settle", event => {
     if (!activity) return;
@@ -296,7 +412,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
       activity = undefined; cancel(); return;
     }
     activity.completed = true;
-    lastOutcome = "awaiting-settlement";
+    if (activity.automatic) lastOutcome = "awaiting-settlement";
   });
 
   pi.on("agent_settled", (event, ctx) => {
@@ -305,8 +421,6 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
     if (!finished) return; // Preserve the earlier content-free skip/cancellation reason.
     if (!finished.started || !finished.loopStarted || !finished.completed || event.aborted ||
         finished.session !== ctx.sessionManager.getSessionId()) { lastOutcome = "skipped:incomplete-activity"; return; }
-    const blocker = notReady(ctx);
-    if (blocker) { lastOutcome = `skipped:${blocker}`; return; }
     try {
       const added = ctx.sessionManager.getBranch().filter(e => !finished.beforeIds.has(e.id));
       // Queued custom messages can bypass input/before_agent_start within a running loop.
@@ -320,48 +434,13 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
         lastOutcome = "skipped:prompt-mismatch"; return;
       }
       localUsers.add(user.id);
+      exchange = { session: finished.session, user: user.id, leaf: ctx.sessionManager.getLeafId() };
+      if (!finished.automatic) return;
+      const blocker = notReady(ctx);
+      if (blocker) { lastOutcome = `skipped:${blocker}`; return; }
       const payload = buildPayload(ctx.sessionManager.buildSessionProjection().entries, user.id, localUsers);
       if (!payload) { lastOutcome = "skipped:context-or-consent-check"; return; }
-      const leaf = ctx.sessionManager.getLeafId(), instance = editor, requestEpoch = ++epoch;
-      const controller = new AbortController();
-      pending = controller;
-      attempts++;
-      lastError = undefined;
-      lastOutcome = "request-pending";
-      const meterEpoch = usageEpoch;
-      void generate(ctx, selection, payload, controller, options.timeoutMs, usage => {
-        // Usage belongs to the session runtime, not to whether a ghost can still be shown.
-        if (usageEpoch !== meterEpoch || !Number.isSafeInteger(inputTokens + usage.input) ||
-            !Number.isSafeInteger(outputTokens + usage.output)) return;
-        inputTokens += usage.input; outputTokens += usage.output; usageReports++;
-      }).then(result => {
-        if (epoch !== requestEpoch || controller.signal.aborted) {
-          // A timeout aborts its own controller; report it only if this request still owns the epoch.
-          if (epoch === requestEpoch && result.error === "timeout") fail("timeout");
-          return;
-        }
-        if (result.error) { fail(result.error); return; }
-        const held = shellHeld;
-        if (ctx.sessionManager.getSessionId() !== finished.session ||
-            (held ? !sameExchange(leaf, ctx) : ctx.sessionManager.getLeafId() !== leaf) ||
-            !instance || instance !== editor || notReady(ctx, held)) {
-          lastOutcome = "discarded:stale-or-not-ready";
-          shellPause = undefined; autoEligible = false; return;
-        }
-        lastError = undefined;
-        lastOutcome = result.outcome ?? "no-result";
-        if (result.text) {
-          if (held) {
-            recallCandidate = { text: result.text, session: finished.session, leaf, editor: instance, offered: false };
-            lastOutcome = "cached-for-recall";
-            instance.refreshGhost();
-          } else if (editor?.setGhost(result.text)) {
-            recallCandidate = { text: result.text, session: finished.session, leaf, editor, offered: true };
-            autoEligible = true; offered++; lastOutcome = "offered";
-          } else lastOutcome = "discarded:editor-not-ready";
-        } else { shellPause = undefined; autoEligible = false; }
-      }).catch(() => { if (epoch === requestEpoch) fail("request-failed"); })
-        .finally(() => { if (pending === controller) { pending = undefined; shellHeld = false; } });
+      startRequest(ctx, exchange, payload, false);
     } catch { fail("context-unavailable"); cancel(); }
   });
 
@@ -370,7 +449,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
   pi.on("session_before_switch", reset);
   pi.on("session_before_fork", reset);
   pi.on("session_before_tree", reset);
-  pi.on("session_before_compact", () => { editor?.resetPrefixSearch(); invalidate("cancelled:compaction"); });
+  pi.on("session_before_compact", () => { exchange = undefined; resumePoint = undefined; editor?.resetPrefixSearch(); invalidate("cancelled:compaction"); activity = undefined; });
   pi.on("session_tree", (_event, ctx) => {
     reset();
     if (ownFactory && ctx.ui.getEditorComponent() === ownFactory) install(ctx, true);

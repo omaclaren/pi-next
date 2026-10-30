@@ -2,7 +2,7 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { PrefixHistoryEditor } from "./prefix-history.ts";
 import { CURSOR_MARKER, matchesKey, renderFakeCursor, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
-export type EditorEdit = "edit" | "shell" | "recall-command";
+export type EditorEdit = "edit" | "shell" | "recall-command" | "suggest-command";
 
 /** Render-only ghost state; it never changes getText(), history or onSubmit. */
 export class GhostEditor extends PrefixHistoryEditor {
@@ -38,6 +38,7 @@ export class GhostEditor extends PrefixHistoryEditor {
   private editKind(text: string): EditorEdit {
     const value = text.trimStart();
     if (value.startsWith("!")) return "shell";
+    if (value && ("/next suggest".startsWith(value) || value.trimEnd() === "/next suggest")) return "suggest-command";
     if (value && ["/next recall", "/next status", "/next-recall"].some(command =>
       command.startsWith(value) || command === value.trimEnd())) return "recall-command";
     return "edit";

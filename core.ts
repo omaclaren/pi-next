@@ -1,5 +1,5 @@
 import { getSupportedThinkingLevels, type Api, type AssistantMessage, type Model, type ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import type { ExtensionContext, ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ProjectedSessionEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export const TIMEOUT_MS = 8_000;
 export const MAX_CONTEXT = 8_000;
@@ -38,8 +38,8 @@ export function ordinary(entries: readonly ProjectedSessionEntry[]) {
     e.messages.map(message => ({ source: e.sourceEntry, message })));
 }
 
-/** Caller supplies IDs attributed to terminal submissions observed in this runtime. */
-export function buildPayload(entries: readonly ProjectedSessionEntry[], userId: string, localUserIds: ReadonlySet<string>): string | undefined {
+/** Callers authorize user IDs; automatic requests use only observed terminal submissions. */
+export function buildPayload(entries: readonly ProjectedSessionEntry[], userId: string, userIds: ReadonlySet<string>): string | undefined {
   const messages = ordinary(entries);
   const current = messages.findIndex(e => e.source.id === userId && e.message.role === "user");
   if (current < 0) return;
@@ -53,7 +53,7 @@ export function buildPayload(entries: readonly ProjectedSessionEntry[], userId: 
   // Conservative common approval asks, not a general semantic consent classifier.
   if (/(?:\b(?:shall|should|may|can) I\b|\b(?:want me to|would you like me to|please confirm|your approval)\b)[^\n]{0,240}\?/i.test(reply.slice(-1_000))) return;
   const users = messages.slice(0, current + 1)
-    .flatMap(e => e.message.role === "user" && localUserIds.has(e.source.id)
+    .flatMap(e => e.message.role === "user" && userIds.has(e.source.id)
       ? [{ id: e.source.id, text: textOnly(e.message.content).trim() }] : [])
     .filter(e => e.text && !looksRemote(e.text)).slice(-3);
   if (!users.some(e => e.id === userId)) return;
@@ -66,6 +66,41 @@ export function buildPayload(entries: readonly ProjectedSessionEntry[], userId: 
   while (encode().length > MAX_CONTEXT && userTexts[0].length > 100) userTexts[0] = clip(userTexts[0], Math.floor(userTexts[0].length * 0.8));
   const payload = encode();
   return payload.length <= MAX_CONTEXT ? payload : undefined;
+}
+
+/** Explicit requests may use retained history, without calling its users locally observed. */
+export function buildResumedPayload(entries: readonly ProjectedSessionEntry[], branch: readonly SessionEntry[]) {
+  let replyId: string | undefined, userId: string | undefined;
+  // Inspect the raw tail too: omitted or incomplete newest messages must not reveal an older pair.
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const source = branch[i];
+    if (source.type === "custom_message" || source.type === "branch_summary") return;
+    if (source.type !== "message" || source.message.role === "bashExecution" || source.message.role === "system") continue;
+    const message = source.message;
+    if (!replyId) {
+      if (message.role !== "assistant" || message.stopReason !== "stop" || !textOnly(message.content).trim() ||
+          message.content.some(c => c.type === "toolCall")) return;
+      replyId = source.id;
+    }
+    if (message.role === "user") { userId = source.id; break; }
+    if (message.role !== "assistant" && message.role !== "toolResult") return;
+  }
+  if (!replyId || !userId) return;
+  const retained = entries.filter(e => !(e.sourceEntry.type === "message" && e.sourceEntry.message.role === "bashExecution"));
+  const messages = ordinary(retained);
+  if (messages.at(-1)?.source.id !== replyId) return;
+  const eligibleText = (content: unknown) => {
+    if (Array.isArray(content) && content.some(c => c?.type !== "text")) return false;
+    const text = textOnly(content).trim();
+    return !!text && !/^[!/]/.test(text) && !looksRemote(text);
+  };
+  const users = messages.filter(e => e.source.type === "message" && e.source.message.role === "user" &&
+    e.message.role === "user" && eligibleText(e.source.message.content) && eligibleText(e.message.content));
+  const current = users.findIndex(e => e.source.id === userId);
+  if (current < 0) return;
+  const userIds = new Set(users.slice(0, current + 1).slice(-3).map(e => e.source.id));
+  const payload = buildPayload(retained, userId, userIds);
+  return payload ? { user: userId, users: userIds, payload } : undefined;
 }
 
 export type OutputOutcome = "suggestion" | "abstained" | "rejected:incomplete-response" | "rejected:tool-call" |

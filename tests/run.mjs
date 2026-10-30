@@ -564,6 +564,10 @@ for (const [response, expected, offered] of [
 }
 const { checkShellPrediction } = await import("./shell-prediction.mjs");
 checks += await checkShellPrediction({ harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
+const { checkManual } = await import("./manual.mjs");
+checks += await checkManual({ harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
+const { checkResumed } = await import("./resumed.mjs");
+checks += await checkResumed({ core, harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
 const { checkHistory } = await import("./history.mjs");
 checks += await checkHistory({ harness, jiti, host, tui, model, project, sdk, modules, KeybindingsManager, screen, theme, rendered, entry, user, assistant, projected });
 const { checkSettings } = await import("./settings.mjs");
@@ -574,5 +578,8 @@ checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManag
 checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, historyOnly: true });
 for (const timing of [true, "typing", "running"]) {
   checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory: true, shellDuringPrediction: timing });
+}
+for (const prefixHistory of [false, true]) for (const manualSuggestion of [true, "pending", "resumed", "resumed-pending"]) {
+  checks += await checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory, manualSuggestion });
 }
 console.log(`Passed ${checks} offline checks with real Pi ${JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version} editor/helpers and session lifecycle; provider calls mocked.`);

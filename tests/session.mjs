@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** Real Pi lifecycle and terminal submit handler, with synthetic context and no network/auth store. */
-export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory = false, historyOnly = false, shellDuringPrediction = false }) {
+export async function checkSession({ host, ai, sdk, modules, project, KeybindingsManager, screen, theme, model, assistant, rendered, prefixHistory = false, historyOnly = false, shellDuringPrediction = false, manualSuggestion = false }) {
   const { Agent } = await import(pathToFileURL(join(modules, "@earendil-works/pi-agent-core/dist/index.js")).href);
   const { InteractiveMode } = await import(pathToFileURL(join(sdk, "dist/modes/interactive/interactive-mode.js")).href);
   const { loadExtensions } = await import(pathToFileURL(join(sdk, "dist/core/extensions/loader.js")).href);
@@ -15,7 +15,9 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
   globalThis.fetch = () => { throw new Error("Network is forbidden in this offline test"); };
   let session, releasePrediction, releaseShell, shellWork;
   const shellGate = shellDuringPrediction === "running" ? new Promise(resolve => { releaseShell = resolve; }) : undefined;
-  const predictionGate = shellDuringPrediction ? new Promise(resolve => { releasePrediction = resolve; }) : undefined;
+  const resumed = manualSuggestion === "resumed" || manualSuggestion === "resumed-pending";
+  const waiting = manualSuggestion === "pending" || manualSuggestion === "resumed-pending";
+  const predictionGate = shellDuringPrediction || waiting ? new Promise(resolve => { releasePrediction = resolve; }) : undefined;
   let checks = 0;
   try {
     const loaded = await loadExtensions([join(project, historyOnly ? "history-only.ts" : "index.ts")], cwd);
@@ -64,7 +66,18 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
       getResourceMetadata: () => new Map(),
     };
-    const agent = new Agent({ initialState: { model, thinkingLevel: "off", tools: [], messages: [], systemPrompt: "Offline fixture" },
+    let sessionManager = host.SessionManager.inMemory(cwd);
+    if (resumed) {
+      const saved = host.SessionManager.create(cwd, join(cwd, "sessions"));
+      saved.appendMessage({ role: "user", content: "Explain closures. I may ask for an example next.", timestamp: 0 });
+      saved.appendMessage(assistant("Saved explanation of closures."));
+      const file = saved.getSessionFile();
+      assert.ok(file && existsSync(file)); checks++;
+      sessionManager = host.SessionManager.open(file, join(cwd, "sessions"));
+      assert.equal(sessionManager.getSessionId(), saved.getSessionId()); checks++;
+      assert.equal(sessionManager.buildSessionContext().messages.length, 2); checks++;
+    }
+    const agent = new Agent({ initialState: { model, thinkingLevel: "off", tools: [], messages: sessionManager.buildSessionContext().messages, systemPrompt: "Offline fixture" },
       convertToLlm: messages => messages,
       streamFn: async () => {
         mainCalls++;
@@ -80,7 +93,7 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       },
     });
     session = new host.AgentSession({ agent, cwd, modelRuntime: runtime,
-      sessionManager: host.SessionManager.inMemory(cwd),
+      sessionManager,
       settingsManager: host.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
       resourceLoader: resources, initialActiveToolNames: [], baseToolsOverride: {},
     });
@@ -141,6 +154,82 @@ export async function checkSession({ host, ai, sdk, modules, project, Keybinding
       handleBashCommand(command, excluded) { shellWork = InteractiveMode.prototype.handleBashCommand.call(terminal, command, excluded); return shellWork; },
       showError: error => errors.push(error), updateEditorBorderColor() {} };
     InteractiveMode.prototype.setupEditorSubmitHandler.call(terminal);
+    if (manualSuggestion) {
+      const saved = readFileSync(join(cwd, "agent", "pi-next.json"), "utf8");
+      const issue = async args => {
+        for (const char of `/next ${args}`) editor.handleInput(char);
+        editor.handleInput("\r"); await submitted;
+        await new Promise(resolve => setImmediate(resolve));
+      };
+      await session.prompt("/next off");
+      if (!resumed) {
+        editor.setText("Explain closures briefly. I may ask for an example next.");
+        editor.handleInput("\r"); await submitted;
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      const initialMainCalls = resumed ? 0 : 1;
+      assert.equal(requests.length, 0); checks++;
+      assert.equal(mainCalls, initialMainCalls); checks++;
+      const entriesBeforeSuggest = session.sessionManager.getBranch().length;
+      const historyBefore = resumed ? readFileSync(sessionManager.getSessionFile(), "utf8") : undefined;
+      prediction = waiting ? "show me a manual example" : "NO_SUGGESTION";
+      await issue("suggest");
+      assert.equal(requests.length, 1); checks++;
+      assert.equal(session.sessionManager.getBranch().length, entriesBeforeSuggest); checks++;
+      if (resumed) {
+        assert.deepEqual(JSON.parse(requests[0].context.messages[0].content[0].text), {
+          userMessages: ["Explain closures. I may ask for an example next."], assistantReply: "Saved explanation of closures.",
+        }); checks++;
+      }
+      if (waiting) {
+        await issue("suggest");
+        assert.ok(notices.at(-1).includes("already being generated")); checks++;
+        assert.equal(requests.length, 1); checks++;
+        assert.equal(requests[0].options.signal.aborted, false); checks++;
+        await issue("status");
+        assert.equal(requests[0].options.signal.aborted, false); checks++;
+        await issue("recall");
+        assert.ok(notices.at(-1).includes("still being generated")); checks++;
+        releasePrediction(); await new Promise(resolve => setImmediate(resolve));
+      } else {
+        assert.ok(notices.at(-1).includes("No useful suggestion")); checks++;
+        assert.ok(!rendered(editor).includes("show me a manual example")); checks++;
+        prediction = "show me a manual example";
+        editor.handleInput("\x1b[200~/next suggest\x1b[201~\r");
+        await submitted; await new Promise(resolve => setImmediate(resolve));
+        assert.equal(requests.length, 2); checks++;
+      }
+      const count = requests.length;
+      assert.ok(rendered(editor).includes("show me a manual example")); checks++;
+      assert.equal(editor.getText(), ""); checks++;
+      assert.equal(mainCalls, initialMainCalls); checks++;
+      assert.equal(session.sessionManager.getBranch().length, entriesBeforeSuggest); checks++;
+      if (resumed) { assert.equal(readFileSync(sessionManager.getSessionFile(), "utf8"), historyBefore); checks++; }
+      await session.prompt("/next status");
+      assert.ok(notices.at(-1).includes("Pi-next: off;")); checks++;
+      assert.ok(notices.at(-1).includes(`Reported tokens: ${150 * count} in / ${20 * count} out (${count}/${count} reports)`)); checks++;
+      editor.handleInput("\x1b"); await issue("recall");
+      assert.ok(rendered(editor).includes("show me a manual example")); checks++;
+      for (const command of ["!echo manual-one", "!!echo manual-two"]) {
+        editor.setText(command); editor.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+        assert.ok(rendered(editor).includes("show me a manual example"), "manual ghost returns after the real bash-result path while automatic mode stays off"); checks++;
+        assert.equal(requests.length, count); checks++;
+      }
+      editor.handleInput("\r");
+      assert.equal(mainCalls, initialMainCalls, "Enter never sends the manual ghost"); checks++;
+      await issue("recall"); editor.handleInput("\x1b[C");
+      assert.equal(editor.getText(), "show me a manual example"); checks++;
+      assert.equal(mainCalls, initialMainCalls); checks++;
+      editor.setText("Another ordinary question."); editor.handleInput("\r"); await submitted;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(mainCalls, initialMainCalls + 1); checks++;
+      assert.equal(requests.length, count, "manual requests leave automatic predictions off"); checks++;
+      assert.equal(readFileSync(join(cwd, "agent", "pi-next.json"), "utf8"), saved); checks++;
+      assert.equal(agent.state.model, model); checks++;
+      assert.equal(agent.state.thinkingLevel, "off"); checks++;
+      assert.deepEqual(errors, []); checks++;
+      return checks;
+    }
     editor.setText("Explain closures briefly. I may ask for an example next.");
     editor.handleInput("\r");
     await submitted;
