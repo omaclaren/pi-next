@@ -70,7 +70,6 @@ export async function checkResumed({ core, harness, assistant, usageResponse, ba
   const tails = [
     () => [entry(user("unanswered latest user"))],
     ...["pending", "error", "aborted", "length", "toolUse", "deferred"].map(reason => () => [entry(user("latest")), entry(assistant("INCOMPLETE_LATEST", reason))]),
-    () => [entry(user("latest")), entry(assistant("Shall I delete those files?"))],
     () => [entry(user("latest")), entry(assistant(""))],
     () => [entry(user("latest")), entry({ ...assistant(""), content: [{ type: "thinking", thinking: "PRIVATE_THINKING_ONLY" }] })],
     () => [entry(user("latest")), entry({ ...assistant("text"), content: [{ type: "toolCall", id: "call", name: "bash", arguments: {} }] })],

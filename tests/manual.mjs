@@ -124,7 +124,7 @@ export async function checkManual({ harness, assistant, usageResponse, bashEntry
     await suggest(h); eq(h.requests.length, 0); eq(h.editor.getText(), text); eq(h.factory, factory);
     await unblock(); await suggest(h); eq(h.requests.length, 1); await h.shutdown();
   }
-  for (const finish of [{ reply: "Shall I delete those files?" }, { reply: "" }, { stopReason: "length" },
+  for (const finish of [{ reply: "" }, { stopReason: "length" },
     { outcome: "error", stopReason: "error" }, { aborted: true }, { continuation: true }]) {
     const h = harness(); await h.start(); await h.command("off"); await h.begin(); await h.finish(finish); await suggest(h);
     eq(h.requests.length, 0); ok(/No useful suggestion|No current local exchange/.test(h.notices.at(-1).text)); await h.shutdown();

@@ -267,10 +267,6 @@ for (const change of [h => h.available(false), h => h.selected(undefined)]) {
   await h.finish(); eq(h.requests.length, 0, "image-bearing submissions conservatively skipped"); await h.shutdown();
 }
 {
-  const h = harness(); await h.start(); await h.begin(); await h.finish({ reply: "Shall I delete those files?" });
-  eq(h.requests.length, 0, "obvious approval question abstains before requesting"); await h.shutdown();
-}
-{
   const h = harness(); await h.start(); const original = h.factory;
   h.editor.addToHistory("keep my input history"); await h.command("off");
   eq(h.factory, original, "off retains inert editor to preserve history");
@@ -564,6 +560,8 @@ for (const [response, expected, offered] of [
 }
 const { checkShellPrediction } = await import("./shell-prediction.mjs");
 checks += await checkShellPrediction({ harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
+const { checkApproval } = await import("./approval.mjs");
+checks += await checkApproval({ core, harness, assistant, entry, user, rendered, pause });
 const { checkManual } = await import("./manual.mjs");
 checks += await checkManual({ harness, assistant, usageResponse, bashEntry, entry, user, rendered, pause });
 const { checkResumed } = await import("./resumed.mjs");

@@ -439,7 +439,7 @@ export function registerNext(pi: ExtensionAPI, options: { timeoutMs?: number; se
       const blocker = notReady(ctx);
       if (blocker) { lastOutcome = `skipped:${blocker}`; return; }
       const payload = buildPayload(ctx.sessionManager.buildSessionProjection().entries, user.id, localUsers);
-      if (!payload) { lastOutcome = "skipped:context-or-consent-check"; return; }
+      if (!payload) { lastOutcome = "skipped:context-check"; return; }
       startRequest(ctx, exchange, payload, false);
     } catch { fail("context-unavailable"); cancel(); }
   });
