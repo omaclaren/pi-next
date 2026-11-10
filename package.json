@@ -1,6 +1,6 @@
 {
   "name": "pi-next",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Next-prompt suggestions for Pi",
   "publishConfig": { "access": "public" },
   "type": "module",
